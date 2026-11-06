@@ -31,6 +31,8 @@ export default defineConfig({
         VERIFICATION_MODE: 'off',
         ALLOWED_ORIGINS: 'http://localhost:5173',
         RATE_LIMIT_MULTIPLIER: '100',
+        // 故事书有效场次的最短时长：仅在 APP_ENV=test 下允许调短（how.md 3.5）。
+        STORY_MIN_DURATION: '1s',
       },
     },
     {

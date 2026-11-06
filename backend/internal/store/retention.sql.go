@@ -61,6 +61,26 @@ func (q *Queries) DeleteExpiredBottles(ctx context.Context, expiresAt pgtype.Tim
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredBroadcasts = `-- name: DeleteExpiredBroadcasts :execrows
+
+WITH batch AS (
+    SELECT b.id FROM broadcasts b
+    WHERE (b.status = 'approved' AND b.show_until IS NOT NULL AND b.show_until < $1)
+       OR (b.status IN ('rejected', 'removed') AND b.reviewed_at IS NOT NULL AND b.reviewed_at < $1)
+    LIMIT 5000
+)
+DELETE FROM broadcasts WHERE id IN (SELECT id FROM batch)
+`
+
+// ---- 本包新增（how.md 3.1 留存规则）----
+func (q *Queries) DeleteExpiredBroadcasts(ctx context.Context, showUntil pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredBroadcasts, showUntil)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteExpiredMessages = `-- name: DeleteExpiredMessages :execrows
 
 WITH batch AS (

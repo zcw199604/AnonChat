@@ -39,6 +39,9 @@ type Config struct {
 	MatchRelaxAfter time.Duration
 	// MatchGrace 是匹配会话中一方断线后的宽限期，默认 30 秒。
 	MatchGrace time.Duration
+	// StoryMinDuration 是故事书有效场次的最短时长，默认 5 分钟；
+	// 只在 APP_ENV=test 时允许小于 5 分钟（how.md 3.5）。
+	StoryMinDuration time.Duration
 
 	// VerificationMode 控制实名验证开关：off | optional | required。
 	VerificationMode string
@@ -94,6 +97,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if cfg.MatchGrace, err = getDuration("MATCH_GRACE", 30*time.Second); err != nil {
+		return nil, err
+	}
+	if cfg.StoryMinDuration, err = getDuration("STORY_MIN_DURATION", 5*time.Minute); err != nil {
 		return nil, err
 	}
 
@@ -155,6 +161,13 @@ func (c *Config) validate() error {
 	}
 	if c.MatchGrace <= 0 {
 		return fmt.Errorf("MATCH_GRACE 必须为正数")
+	}
+	if c.StoryMinDuration <= 0 {
+		return fmt.Errorf("STORY_MIN_DURATION 必须为正数")
+	}
+	// 有效场次的最短时长默认 5 分钟，只有测试环境允许调短（how.md 3.5）。
+	if c.Env != "test" && c.StoryMinDuration < 5*time.Minute {
+		return fmt.Errorf("STORY_MIN_DURATION 不得小于 5 分钟（仅 APP_ENV=test 允许）")
 	}
 	if c.RateLimitMultiplier < 1 {
 		return fmt.Errorf("RATE_LIMIT_MULTIPLIER 必须为正整数")

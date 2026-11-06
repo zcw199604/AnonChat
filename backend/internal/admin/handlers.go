@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/store"
@@ -596,4 +597,41 @@ type createBanRequest struct {
 	Subjects      []banSubjectJSON `json:"subjects"`
 	DurationHours *int             `json:"durationHours"`
 	Reason        string           `json:"reason"`
+}
+
+// ---- 按匿名编号查身份 ----
+
+// LookupIdentityByCodeHandler 处理 GET /api/admin/identities/by-code/{code}。
+// 返回匿名身份摘要（身份 ID、创建时间、VIP 状态、封禁状态），可直接发起封禁。
+func (s *Service) LookupIdentityByCodeHandler(w http.ResponseWriter, r *http.Request) {
+	code := identity.NormalizePublicCode(r.PathValue("code"))
+	if code == "" {
+		httpx.WriteError(w, httpx.NewError(httpx.CodeInvalidRequest, "匿名编号不能为空"))
+		return
+	}
+	ident, err := s.q.GetIdentityByPublicCode(r.Context(), code)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			httpx.WriteError(w, notFound("匿名编号不存在"))
+			return
+		}
+		httpx.WriteError(w, internalErr())
+		return
+	}
+	summary, bans, err := s.identitySummary(r.Context(), ident.ID)
+	if err != nil {
+		httpx.WriteError(w, internalErr())
+		return
+	}
+	vipActive := ident.VipUntil.Valid && ident.VipUntil.Time.After(s.now())
+	banned := len(bans) > 0
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		"identityId": ident.ID.String(),
+		"publicCode": ident.PublicCode,
+		"createdAt":  formatTS(ident.CreatedAt),
+		"vipActive":  vipActive,
+		"banned":     banned,
+		"activeBans": bans,
+		"summary":    summary,
+	})
 }

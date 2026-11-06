@@ -213,6 +213,11 @@ func (s *Service) SessionAdmin(ctx context.Context, token string) (pgtype.UUID, 
 	return sess.AdminID, true
 }
 
+// LogAudit 供其他模块（公告、广播、激活码、作品审核）写入管理员操作审计日志。
+func (s *Service) LogAudit(ctx context.Context, adminID pgtype.UUID, action, target string, detail map[string]any) {
+	s.audit(ctx, adminID, action, target, detail)
+}
+
 // audit 写一条审计日志（失败只记录日志，不影响主流程）。
 func (s *Service) audit(ctx context.Context, adminID pgtype.UUID, action, target string, detail map[string]any) {
 	var detailJSON []byte

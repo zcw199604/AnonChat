@@ -13,21 +13,37 @@ import (
 
 	"github.com/anonchat/anonchat/backend/internal/conversation"
 	"github.com/anonchat/anonchat/backend/internal/moderation"
+	"github.com/anonchat/anonchat/backend/internal/profile"
 	"github.com/anonchat/anonchat/backend/internal/realtime"
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
 
-// match.found 的 peer 负载。
+// match.found 的 peer 负载（how.md 3.4：去掉了 nickname 和 avatarSeed）。
 type peerInfo struct {
-	MemberID   int32  `json:"memberId"`
-	Nickname   string `json:"nickname"`
-	AvatarSeed string `json:"avatarSeed"`
+	MemberID  int32    `json:"memberId"`
+	Gender    *string  `json:"gender"`
+	Age       *int16   `json:"age"`
+	Province  *string  `json:"province"`
+	Tags      []string `json:"tags"`
+	CleanMode bool     `json:"cleanMode"`
 }
 
 // matchFoundPayload 是 match.found 的负载。
 type matchFoundPayload struct {
 	ConversationID string   `json:"conversationId"`
 	Peer           peerInfo `json:"peer"`
+}
+
+// matchFilters 是服务端最终生效的匹配条件（match.waiting 的 filters）。
+type matchFilters struct {
+	CleanMode    bool   `json:"cleanMode"`
+	Gender       string `json:"gender"`
+	SameProvince bool   `json:"sameProvince"`
+}
+
+// matchWaitingPayload 是 match.waiting 的负载。
+type matchWaitingPayload struct {
+	Filters matchFilters `json:"filters"`
 }
 
 // Service 组合匹配器、WS 处理、断线宽限与会话创建。
@@ -40,6 +56,7 @@ type Service struct {
 	limiter moderation.RateLimiter
 	matcher *memoryMatcher
 	grace   time.Duration
+	now     func() time.Time
 
 	mu          sync.Mutex
 	graceTimers map[pgtype.UUID]*time.Timer
@@ -53,6 +70,7 @@ func WithClock(fn func() time.Time) Option {
 	return func(s *Service) {
 		if fn != nil {
 			s.matcher.now = fn
+			s.now = fn
 		}
 	}
 }
@@ -79,9 +97,11 @@ func New(pool *pgxpool.Pool, logger *slog.Logger, convSvc *conversation.Service,
 		hub:         hub,
 		limiter:     limiter,
 		grace:       grace,
+		now:         time.Now,
 		graceTimers: make(map[pgtype.UUID]*time.Timer),
 	}
-	prefetcher := &sqlPrefetcher{q: s.q}
+	// 用闭包延后取值，确保 WithClock 注入后生效。
+	prefetcher := &sqlPrefetcher{q: s.q, now: func() time.Time { return s.now() }}
 	s.matcher = NewMemoryMatcher(prefetcher, s.onPair, relaxAfter, time.Second)
 	for _, o := range opts {
 		o(s)
@@ -119,8 +139,8 @@ func (s *Service) handleStart(ctx context.Context, c *realtime.Conn, env realtim
 	if conv, ok := s.activeMatchConv(ctx, ident.ID); ok {
 		_ = s.convSvc.End(ctx, conv, "peer_skipped")
 	}
-	// 先回 waiting，再入队（若立即配对，found 会在 waiting 之后到达）。
-	c.SendEvent(realtime.TypeMatchWaiting, env.ID, nil)
+	// 先回 waiting（带服务端最终生效的条件），再入队（若立即配对，found 会在 waiting 之后到达）。
+	c.SendEvent(realtime.TypeMatchWaiting, env.ID, matchWaitingPayload{Filters: s.effectiveFilters(ctx, ident)})
 	if err := s.matcher.Enqueue(ctx, ident); err != nil {
 		s.logger.Error("匹配：入队失败", "error", err)
 		c.SendError(env.ID, realtime.CodeInternal, "匹配暂时不可用")
@@ -137,8 +157,8 @@ func (s *Service) handleNext(ctx context.Context, c *realtime.Conn, env realtime
 	if conv, ok := s.activeMatchConv(ctx, ident.ID); ok {
 		_ = s.convSvc.End(ctx, conv, "peer_skipped")
 	}
-	// 先回 waiting，再入队（若立即配对，found 会在 waiting 之后到达）。
-	c.SendEvent(realtime.TypeMatchWaiting, env.ID, nil)
+	// 先回 waiting（带服务端最终生效的条件），再入队（若立即配对，found 会在 waiting 之后到达）。
+	c.SendEvent(realtime.TypeMatchWaiting, env.ID, matchWaitingPayload{Filters: s.effectiveFilters(ctx, ident)})
 	if err := s.matcher.Enqueue(ctx, ident); err != nil {
 		s.logger.Error("匹配：入队失败", "error", err)
 		c.SendError(env.ID, realtime.CodeInternal, "匹配暂时不可用")
@@ -155,7 +175,8 @@ func (s *Service) handleLeave(ctx context.Context, c *realtime.Conn, env realtim
 }
 
 // onPair 在匹配 goroutine 内被调用：创建会话、订阅双方连接、推送 match.found。
-func (s *Service) onPair(a, b *store.Identity) error {
+func (s *Service) onPair(ae, be *queueEntry) error {
+	a, b := ae.ident, be.ident
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -183,19 +204,23 @@ func (s *Service) onPair(a, b *store.Identity) error {
 	s.hub.SubscribeIdentity(b.ID, conv.ID)
 
 	// members[0] 是 a，members[1] 是 b。
-	s.sendFound(a.ID, conv.ID, members[1].MemberID, b)
-	s.sendFound(b.ID, conv.ID, members[0].MemberID, a)
+	s.sendFound(a.ID, conv.ID, members[1].MemberID, be.ic.Profile)
+	s.sendFound(b.ID, conv.ID, members[0].MemberID, ae.ic.Profile)
 	return nil
 }
 
-// sendFound 向某身份的全部连接推送 match.found。
-func (s *Service) sendFound(identityID, convID pgtype.UUID, peerMemberID int32, peer *store.Identity) {
+// sendFound 向某身份的全部连接推送 match.found（只含对方的公开资料）。
+func (s *Service) sendFound(identityID, convID pgtype.UUID, peerMemberID int32, prof PrefProfile) {
+	pub := profile.NewPublicProfile(prof.Gender, prof.Age, prof.Province, prof.ProvincePublic, prof.Tags, prof.CleanMode)
 	env, err := realtime.NewEnvelope(realtime.TypeMatchFound, "", matchFoundPayload{
 		ConversationID: convID.String(),
 		Peer: peerInfo{
-			MemberID:   peerMemberID,
-			Nickname:   peer.Nickname,
-			AvatarSeed: peer.AvatarSeed,
+			MemberID:  peerMemberID,
+			Gender:    pub.Gender,
+			Age:       pub.Age,
+			Province:  pub.Province,
+			Tags:      pub.Tags,
+			CleanMode: pub.CleanMode,
 		},
 	})
 	if err != nil {
@@ -203,6 +228,27 @@ func (s *Service) sendFound(identityID, convID pgtype.UUID, peerMemberID int32, 
 	}
 	s.hub.SendToIdentity(identityID, env)
 }
+
+// effectiveFilters 计算服务端最终生效的匹配条件（非 VIP 的偏好被忽略）。
+func (s *Service) effectiveFilters(ctx context.Context, ident *store.Identity) matchFilters {
+	out := matchFilters{Gender: "any"}
+	row, err := s.q.GetMatchProfile(ctx, ident.ID)
+	if err != nil {
+		return out
+	}
+	vip := row.VipUntil.Valid && row.VipUntil.Time.After(s.now())
+	out.CleanMode = row.CleanMode
+	if vip {
+		if row.MatchGender != "" {
+			out.Gender = row.MatchGender
+		}
+		out.SameProvince = row.MatchSameProvince
+	}
+	return out
+}
+
+// QueueLen 返回当前排队人数（用于在线统计）。
+func (s *Service) QueueLen() int { return s.matcher.QueueLen() }
 
 // activeMatchConv 返回该身份进行中的匹配会话（若存在）。
 func (s *Service) activeMatchConv(ctx context.Context, identityID pgtype.UUID) (pgtype.UUID, bool) {
@@ -288,7 +334,8 @@ var errInvalidPair = errors.New("配对成员数异常")
 
 // sqlPrefetcher 在入队时一次性查询屏蔽相关身份集合与最近 3 个对象。
 type sqlPrefetcher struct {
-	q *store.Queries
+	q   *store.Queries
+	now func() time.Time
 }
 
 func (c *sqlPrefetcher) Prefetch(ctx context.Context, identityID pgtype.UUID) (IdentityContext, error) {
@@ -303,7 +350,22 @@ func (c *sqlPrefetcher) Prefetch(ctx context.Context, identityID pgtype.UUID) (I
 	if err != nil {
 		return IdentityContext{}, err
 	}
-	return IdentityContext{Blocked: uuidSet(blockedRows), Recent: uuidSet(recentRows)}, nil
+	row, err := c.q.GetMatchProfile(ctx, identityID)
+	if err != nil {
+		return IdentityContext{}, err
+	}
+	prof := PrefProfile{
+		Gender:         row.Gender,
+		Age:            row.Age,
+		Province:       row.Province,
+		ProvincePublic: row.ProvincePublic,
+		Tags:           row.Tags,
+		CleanMode:      row.CleanMode,
+		MatchGender:    row.MatchGender,
+		MatchSameProv:  row.MatchSameProvince,
+		VIP:            row.VipUntil.Valid && row.VipUntil.Time.After(c.now()),
+	}
+	return IdentityContext{Blocked: uuidSet(blockedRows), Recent: uuidSet(recentRows), Profile: prof}, nil
 }
 
 func uuidSet(ids []pgtype.UUID) map[pgtype.UUID]struct{} {

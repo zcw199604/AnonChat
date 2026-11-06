@@ -146,7 +146,58 @@ func TestWSEndToEndSubscribeSend(t *testing.T) {
 		} `json:"message"`
 	}
 	_ = json.Unmarshal(newEnv.Data, &payload)
-	if payload.Message.Body != "你好呀" || payload.Message.Nickname != "bob" {
-		t.Errorf("广播内容不符: %+v", payload.Message)
+	// match 会话属于 1v1：nickname 按 how.md 3.6 置空，正文不变。
+	if payload.Message.Body != "你好呀" || payload.Message.Nickname != "" {
+		t.Errorf("广播内容不符（1v1 的 nickname 应为空）: %+v", payload.Message)
+	}
+}
+
+// TestTypingBroadcastToPeer 验证 typing 事件广播给会话其他成员，且不含身份 UUID。
+func TestTypingBroadcastToPeer(t *testing.T) {
+	pool := testutil.MustPool(t)
+	testutil.Truncate(t, pool)
+	srv := testutil.MustServer(t, pool, testutil.Config{})
+
+	a, tokA := createIdentity(t, pool, "typing-a")
+	b, tokB := createIdentity(t, pool, "typing-b")
+	convSvc := newService(pool, nil)
+	conv := createConv(t, pool, convSvc, store.ConversationKindMatch, false, a.ID, b.ID)
+
+	wsA := dialWS(t, srv, tokA)
+	_ = readWS(t, wsA) // hello
+	wsB := dialWS(t, srv, tokB)
+	_ = readWS(t, wsB) // hello
+
+	// B 订阅会话，才能收到 typing。额外附带一个非法会话，用于确认订阅已在服务端生效
+	// （同一连接内事件按序处理，错误帧到达即说明前面的订阅已完成），避免订阅与 typing 的竞态。
+	writeWS(t, wsB, map[string]any{
+		"t": realtime.TypeConvSubscribe, "id": "sub-b",
+		"d": map[string]any{"conversationIds": []string{conv.ID.String(), newUUID(t).String()}},
+	})
+	if barrier := readWS(t, wsB); barrier.Type != realtime.TypeError {
+		t.Fatalf("订阅屏障应收到 error, 实际 %q (%s)", barrier.Type, barrier.Data)
+	}
+
+	writeWS(t, wsA, map[string]any{
+		"t": realtime.TypeTyping, "id": "typing-1",
+		"d": map[string]any{"conversationId": conv.ID.String()},
+	})
+
+	got := readWS(t, wsB)
+	if got.Type != realtime.TypeTyping {
+		t.Fatalf("对方应收到 typing, 实际 %q (%s)", got.Type, got.Data)
+	}
+	if strings.Contains(string(got.Data), a.ID.String()) {
+		t.Fatalf("typing 事件不应包含身份 UUID: %s", got.Data)
+	}
+	var payload struct {
+		ConversationID string `json:"conversationId"`
+		MemberID       int32  `json:"memberId"`
+	}
+	if err := json.Unmarshal(got.Data, &payload); err != nil {
+		t.Fatalf("解析 typing 载荷失败: %v", err)
+	}
+	if payload.ConversationID != conv.ID.String() || payload.MemberID == 0 {
+		t.Fatalf("typing 载荷不符: %+v", payload)
 	}
 }

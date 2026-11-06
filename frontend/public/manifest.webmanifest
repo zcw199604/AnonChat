@@ -1,0 +1,19 @@
+{
+  "name": "AnonChat 匿名聊天",
+  "short_name": "AnonChat",
+  "description": "匿名聊天，打开就能聊。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F7F7FA",
+  "theme_color": "#8B7CF6",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

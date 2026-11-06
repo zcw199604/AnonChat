@@ -222,6 +222,17 @@ type Limits struct {
 	AdminLogin WindowLimit
 	// 举报（每身份每天）。
 	ReportDaily WindowLimit
+	// 随机昵称（每身份每分钟）。
+	NicknameShuffle WindowLimit
+	// 自定义昵称（每身份每天）。
+	NicknameSet WindowLimit
+	// 兑换激活码：每身份、每 IP。
+	VIPRedeemPerID WindowLimit
+	VIPRedeemPerIP WindowLimit
+	// 提交广播（每身份每天）。
+	BroadcastPost WindowLimit
+	// 发起故事（每身份每天）。
+	StoryCreate WindowLimit
 }
 
 // DefaultLimits 返回 how.md 表中的默认限流值。
@@ -240,6 +251,12 @@ func DefaultLimits() Limits {
 		SMSPerIPDaily:       WindowLimit{Limit: 20, Window: 24 * time.Hour},
 		AdminLogin:          WindowLimit{Limit: 5, Window: 15 * time.Minute},
 		ReportDaily:         WindowLimit{Limit: 20, Window: 24 * time.Hour},
+		NicknameShuffle:     WindowLimit{Limit: 10, Window: time.Minute},
+		NicknameSet:         WindowLimit{Limit: 10, Window: 24 * time.Hour},
+		VIPRedeemPerID:      WindowLimit{Limit: 5, Window: 10 * time.Minute},
+		VIPRedeemPerIP:      WindowLimit{Limit: 20, Window: 10 * time.Minute},
+		BroadcastPost:       WindowLimit{Limit: 5, Window: 24 * time.Hour},
+		StoryCreate:         WindowLimit{Limit: 10, Window: 24 * time.Hour},
 	}
 }
 
@@ -264,5 +281,11 @@ func (l Limits) Scaled(m int) Limits {
 	l.SMSPerIPDaily = sw(l.SMSPerIPDaily)
 	l.AdminLogin = sw(l.AdminLogin)
 	l.ReportDaily = sw(l.ReportDaily)
+	l.NicknameShuffle = sw(l.NicknameShuffle)
+	l.NicknameSet = sw(l.NicknameSet)
+	l.VIPRedeemPerID = sw(l.VIPRedeemPerID)
+	l.VIPRedeemPerIP = sw(l.VIPRedeemPerIP)
+	l.BroadcastPost = sw(l.BroadcastPost)
+	l.StoryCreate = sw(l.StoryCreate)
 	return l
 }

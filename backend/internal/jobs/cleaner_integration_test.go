@@ -36,8 +36,11 @@ func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Val
 func insertIdentity(t *testing.T, pool *pgxpool.Pool, revokedAt time.Time) pgtype.UUID {
 	t.Helper()
 	var id pgtype.UUID
-	q := `INSERT INTO identities (token_hash, nickname, avatar_seed, revoked_at)
-	      VALUES (uuid_send(gen_random_uuid()), 'n', 's', $1) RETURNING id`
+	// public_code 由数据库默认逻辑生成（见 queries/identity.sql CreateIdentity 的兜底）。
+	q := `INSERT INTO identities (token_hash, nickname, avatar_seed, revoked_at, public_code)
+	      VALUES (uuid_send(gen_random_uuid()), 'n', 's', $1,
+	              upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 10)))
+	      RETURNING id`
 	var rev *time.Time
 	if !revokedAt.IsZero() {
 		rev = &revokedAt

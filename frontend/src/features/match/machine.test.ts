@@ -8,15 +8,17 @@ describe('matchReducer', () => {
   it('取消回到空闲', () => {
     expect(matchReducer({ status: 'waiting' }, { type: 'cancel' }).status).toBe('idle')
   })
-  it('匹配成功进入聊天中并记录对方与自身 memberId', () => {
+  it('匹配成功进入聊天中并记录对方的公开资料（不再含昵称）', () => {
     const s = matchReducer(initialMatchState, {
       type: 'found',
       conversationId: 'c1',
-      peer: { memberId: 2, nickname: 'bob', avatarSeed: 'x' },
+      peer: { memberId: 2, gender: 'female', age: 24, province: '浙江', tags: ['音乐'], cleanMode: true },
     })
     expect(s.status).toBe('chatting')
     expect(s.conversationId).toBe('c1')
-    expect(s.peer?.nickname).toBe('bob')
+    expect(s.peer?.memberId).toBe(2)
+    expect(s.peer?.province).toBe('浙江')
+    expect(s.peer && 'nickname' in s.peer).toBe(false)
   })
   it('下一个回到等待中', () => {
     expect(matchReducer({ status: 'chatting' }, { type: 'next' }).status).toBe('waiting')

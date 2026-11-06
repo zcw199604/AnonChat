@@ -167,7 +167,27 @@ func (c *Cleaner) RunOnce(ctx context.Context) (map[string]int64, error) {
 		return stats, err
 	}
 
-	// 8. 已撤销且无人引用的身份（AUDIT_RETENTION）。
+	// 8. 故事书：等待超时的故事置为 expired；结束且未生成作品的故事在 7 天后删除。
+	//    story_works 属于用户主动发布的内容，不受 7 天留存约束（why.md 风险表）。
+	if n, err := c.q.ExpireWaitingStories(ctx); err != nil {
+		return stats, err
+	} else {
+		stats["stories_expired"] = n
+	}
+	if err := c.loop(ctx, stats, "stories", func() (int64, error) {
+		return c.q.DeleteOldEndedStories(ctx, msgCutoff)
+	}); err != nil {
+		return stats, err
+	}
+
+	// 9. 广播：展示结束 7 天后，或已驳回/下架 7 天后删除。
+	if err := c.loop(ctx, stats, "broadcasts", func() (int64, error) {
+		return c.q.DeleteExpiredBroadcasts(ctx, msgCutoff)
+	}); err != nil {
+		return stats, err
+	}
+
+	// 10. 已撤销且无人引用的身份（AUDIT_RETENTION）。
 	if err := c.loop(ctx, stats, "identities", func() (int64, error) {
 		return c.q.DeleteUnreferencedRevokedIdentities(ctx, auditCutoff)
 	}); err != nil {

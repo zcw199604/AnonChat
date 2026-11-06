@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { getWsClient } from '../../lib/ws'
 import { useChat } from '../../lib/useChat'
 import { useUiStore } from '../../stores/ui'
@@ -7,11 +7,15 @@ import { errorMessage } from '../../lib/api/errorMessages'
 import { blockConversation, createReport } from '../../lib/api/client'
 import { MessageList } from '../../components/MessageList'
 import { Composer } from '../../components/Composer'
+import { GlassPanel } from '../../components/GlassPanel'
 import { BlockConfirm } from '../../components/BlockConfirm'
 import { ReportDialog } from '../../components/ReportDialog'
+import { codename } from '../../lib/codename'
 
+/** 匿名信会话（how.md 2.3）：暗色玻璃，1v1 只显示匿名代号。 */
 export default function BottleConversationPage() {
   const { conversationId } = useParams()
+  const nav = useNavigate()
   const ws = getWsClient()
   const setToast = useUiStore((s) => s.setToast)
   const chat = useChat(conversationId ?? null)
@@ -32,8 +36,8 @@ export default function BottleConversationPage() {
 
   const peerMemberId = useMemo(() => {
     const m = chat.messages.find((x) => x.memberId !== chat.myMemberId)
-    return m?.memberId ?? null
-  }, [chat.messages, chat.myMemberId])
+    return m?.memberId ?? chat.peer?.memberId ?? null
+  }, [chat.messages, chat.myMemberId, chat.peer])
 
   const peerMessages = chat.messages
     .filter((m) => m.memberId !== chat.myMemberId)
@@ -63,23 +67,73 @@ export default function BottleConversationPage() {
   }
 
   if (ended) {
-    return <main className="mx-auto max-w-xl px-4 py-10 text-center text-slate-300">会话已结束</main>
+    return (
+      <main className="flex min-h-screen items-center justify-center px-4 text-center">
+        <div className="space-y-4">
+          <p className="text-night-ink">会话已结束</p>
+          <button
+            type="button"
+            onClick={() => nav('/bottles')}
+            className="rounded-full bg-brand px-5 py-2 text-sm text-white transition duration-150 ease-out"
+          >
+            返回匿名信
+          </button>
+        </div>
+      </main>
+    )
   }
 
+  const name = conversationId ? codename(conversationId, peerMemberId ?? 0) : '对方'
+
   return (
-    <main className="mx-auto max-w-2xl px-4 py-4 flex flex-col h-[calc(100vh-56px)]">
-      <div className="flex items-center justify-end gap-2 pb-2 border-b border-slate-800 text-sm">
-        <button type="button" className="px-2 py-1 rounded bg-slate-800" onClick={() => setBlockOpen(true)}>
-          屏蔽
-        </button>
-        <button type="button" className="px-2 py-1 rounded bg-slate-800" onClick={() => setReportOpen(true)}>
-          举报
-        </button>
-      </div>
-      <MessageList messages={chat.messages} selfMemberId={chat.myMemberId} />
-      <Composer onSend={chat.send} />
+    <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
+      <GlassPanel className="h-full rounded-none md:rounded-panel">
+        <header className="flex items-center justify-between gap-2 border-b border-glass-line px-4 py-3">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              aria-label="返回匿名信"
+              onClick={() => nav('/bottles')}
+              className="h-8 w-8 rounded-full text-center text-sm text-white"
+              style={{ background: 'linear-gradient(135deg, var(--color-brand), var(--color-accent))' }}
+            >
+              ←
+            </button>
+            <span className="text-sm font-medium text-night-ink">{name}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              className="rounded-sm px-2.5 py-1 text-xs text-night-ink transition duration-150 ease-out hover:bg-glass"
+              onClick={() => setBlockOpen(true)}
+            >
+              屏蔽
+            </button>
+            <button
+              type="button"
+              className="rounded-sm px-2.5 py-1 text-xs text-night-ink transition duration-150 ease-out hover:bg-glass"
+              onClick={() => setReportOpen(true)}
+            >
+              举报
+            </button>
+          </div>
+        </header>
+        <MessageList
+          messages={chat.messages}
+          selfMemberId={chat.myMemberId}
+          conversationId={conversationId}
+          anonMode
+          typing={chat.typing}
+        />
+        <Composer onSend={chat.send} onTyping={chat.sendTyping} />
+      </GlassPanel>
       <BlockConfirm open={blockOpen} onCancel={() => setBlockOpen(false)} onConfirm={doBlock} />
-      <ReportDialog open={reportOpen} peerMessages={peerMessages} onClose={() => setReportOpen(false)} onSubmit={doReport} />
+      <ReportDialog
+        open={reportOpen}
+        peerMessages={peerMessages}
+        onClose={() => setReportOpen(false)}
+        onSubmit={doReport}
+      />
     </main>
   )
 }

@@ -27,14 +27,18 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/bottle"
 	"github.com/anonchat/anonchat/backend/internal/config"
 	"github.com/anonchat/anonchat/backend/internal/conversation"
+	"github.com/anonchat/anonchat/backend/internal/feed"
 	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/match"
 	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/privatechat"
+	"github.com/anonchat/anonchat/backend/internal/profile"
 	"github.com/anonchat/anonchat/backend/internal/realtime"
 	"github.com/anonchat/anonchat/backend/internal/room"
+	"github.com/anonchat/anonchat/backend/internal/story"
 	"github.com/anonchat/anonchat/backend/internal/verify"
+	"github.com/anonchat/anonchat/backend/internal/vip"
 	"github.com/anonchat/anonchat/backend/migrations"
 )
 
@@ -63,6 +67,16 @@ type Config struct {
 	AdminIPAllowlist     []string
 
 	Filter conversation.ContentFilter
+
+	// StoryMinDuration 是故事有效场次的最短时长（测试可调短）。
+	StoryMinDuration time.Duration
+	// BroadcastLimiter / StoryLimiter / VIPLimiters 允许测试收紧限流。
+	BroadcastLimiter moderation.RateLimiter
+	StoryLimiter     moderation.RateLimiter
+	VIPPerIDLimiter  moderation.RateLimiter
+	VIPPerIPLimiter  moderation.RateLimiter
+	NicknameShuffle  moderation.RateLimiter
+	NicknameSet      moderation.RateLimiter
 
 	SMS   verify.SMSProvider
 	Clock func() time.Time
@@ -118,7 +132,7 @@ func runMigrations(t *testing.T, url string) {
 // Truncate 清空身份/验证相关表，确保测试之间互不影响。
 func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	const q = `TRUNCATE identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_users, admin_sessions, admin_audit_logs RESTART IDENTITY CASCADE`
+	const q = `TRUNCATE identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_users, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes RESTART IDENTITY CASCADE`
 	if _, err := pool.Exec(context.Background(), q); err != nil {
 		t.Fatalf("清空表失败: %v", err)
 	}
@@ -234,9 +248,39 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 		admin.WithClock(clock),
 		admin.WithLoginLimiters(limiterOr(c.AdminLoginLimiter), limiterOr(c.AdminLoginLimiter)))
 
+	profileSvc := profile.New(pool, logger,
+		profile.WithClock(clock),
+		profile.WithFilter(filter),
+		profile.WithNicknameLimiters(limiterOr(c.NicknameShuffle), limiterOr(c.NicknameSet)),
+	)
+	profileHandler := profile.NewHandler(profileSvc, logger, cfg.VerificationMode)
+
+	vipSvc := vip.New(pool, logger,
+		vip.WithClock(clock),
+		vip.WithLimiters(limiterOr(c.VIPPerIDLimiter), limiterOr(c.VIPPerIPLimiter)),
+		vip.WithAccessLogger(idSvc),
+	)
+	vipHandler := vip.NewHandler(vipSvc, adminSvc, cfg.VerificationMode)
+
+	feedSvc := feed.New(pool, logger,
+		feed.WithClock(clock),
+		feed.WithFilter(filter),
+		feed.WithBroadcastLimiter(limiterOr(c.BroadcastLimiter)),
+	)
+	feedHandler := feed.NewHandler(feedSvc, adminSvc)
+
+	storySvc := story.New(pool, logger, convSvc, gateway.Hub(),
+		story.WithClock(clock),
+		story.WithFilter(filter),
+		story.WithLimiter(limiterOr(c.StoryLimiter)),
+		story.WithMinDuration(c.StoryMinDuration),
+	)
+	storyHandler := story.NewHandler(storySvc, adminSvc)
+
 	deps := api.Deps{Cfg: cfg, Pool: pool, Logger: logger, Identity: idHandler, Verify: verHandler,
 		Realtime: gateway, Conversation: convSvc, Report: reportSvc, Ban: banSvc, Resolver: resolver,
-		Match: matchSvc, Room: roomSvc, Bottle: bottleSvc, Private: privateSvc, Admin: adminSvc}
+		Match: matchSvc, Room: roomSvc, Bottle: bottleSvc, Private: privateSvc, Admin: adminSvc,
+		Profile: profileHandler, VIP: vipHandler, Feed: feedHandler, Story: storyHandler, StoryService: storySvc}
 	srv := httptest.NewServer(api.NewServer(deps).Handler())
 	t.Cleanup(srv.Close)
 	return &Env{Server: srv, Deps: deps}
@@ -252,6 +296,10 @@ func buildConfig(c Config) *config.Config {
 	if mode == "" {
 		mode = "off"
 	}
+	storyMin := c.StoryMinDuration
+	if storyMin <= 0 {
+		storyMin = 5 * time.Minute
+	}
 	return &config.Config{
 		Env:              "test",
 		HTTPAddr:         ":8080",
@@ -263,6 +311,7 @@ func buildConfig(c Config) *config.Config {
 		PhoneEncKey:      c.EncKey,
 		PhoneHmacKey:     c.HmacKey,
 		AdminIPAllowlist: c.AdminIPAllowlist,
+		StoryMinDuration: storyMin,
 	}
 }
 

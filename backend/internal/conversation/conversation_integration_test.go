@@ -203,8 +203,9 @@ func TestSendInsertsAcksThenBroadcasts(t *testing.T) {
 	if err := json.Unmarshal(b0.env.Data, &payload); err != nil {
 		t.Fatalf("广播载荷解析失败: %v", err)
 	}
-	if payload.Message.Nickname != "alice" || payload.Message.MemberID == 0 {
-		t.Errorf("广播载荷字段不全: %+v", payload)
+	// match 会话属于 1v1：nickname 按 how.md 3.6 置空，前端改用匿名代号。
+	if payload.Message.Nickname != "" || payload.Message.MemberID == 0 {
+		t.Errorf("广播载荷字段不符（1v1 的 nickname 应为空）: %+v", payload)
 	}
 }
 

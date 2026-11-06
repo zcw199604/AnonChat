@@ -23,6 +23,22 @@ describe('errorMessage', () => {
     }
   })
 
+  it('包含本包新增的错误码（how.md 3.7）', () => {
+    const required = [
+      'vip_required',
+      'invalid_code',
+      'no_broadcast_card',
+      'story_taken',
+      'story_not_valid',
+      'not_found',
+    ]
+    for (const code of required) {
+      expect(KNOWN_ERROR_CODES).toContain(code)
+    }
+    expect(errorMessage('vip_required')).toContain('VIP')
+    expect(errorMessage('invalid_code')).toContain('激活码')
+  })
+
   it('未知错误码返回通用提示', () => {
     const generic = errorMessage('unknown-body')
     expect(generic).toBe('操作失败，请稍后重试')

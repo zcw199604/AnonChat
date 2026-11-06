@@ -33,7 +33,7 @@ test('C 漂流瓶：投放、捞取、回复、我的瓶子未读', async ({ bro
   await expect(a.getByText('瓶子已投入海里')).toBeVisible({ timeout: 20000 })
 
   await b.goto('/bottles')
-  await b.getByRole('button', { name: '捞瓶子' }).click()
+  await b.getByRole('button', { name: '捞一封' }).click()
   await pickUntil(b, content)
 
   await b.getByLabel('回复内容').fill('reply-from-b')
@@ -42,7 +42,7 @@ test('C 漂流瓶：投放、捞取、回复、我的瓶子未读', async ({ bro
   await sendChat(b, 'bottle-reply-text')
   await expect(b.getByText('bottle-reply-text')).toBeVisible({ timeout: 20000 })
 
-  await a.getByRole('button', { name: /我的瓶子/ }).click()
+  await a.getByRole('button', { name: /我的信/ }).click()
   await expect(a.getByText(content)).toBeVisible({ timeout: 20000 })
   await a.getByRole('button', { name: /查看回复/ }).first().click()
   await expect(a.getByLabel('消息输入框')).toBeVisible({ timeout: 20000 })

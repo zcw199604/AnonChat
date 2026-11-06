@@ -12,10 +12,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const consumeBroadcastCard = `-- name: ConsumeBroadcastCard :execrows
+UPDATE identities SET broadcast_cards = broadcast_cards - 1
+WHERE id = $1 AND broadcast_cards > 0
+`
+
+func (q *Queries) ConsumeBroadcastCard(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeBroadcastCard, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createIdentity = `-- name: CreateIdentity :one
-INSERT INTO identities (token_hash, nickname, avatar_seed, created_ip)
-VALUES ($1, $2, $3, $4)
-RETURNING id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at
+INSERT INTO identities (token_hash, nickname, avatar_seed, created_ip, public_code)
+VALUES ($1, $2, $3, $4,
+        COALESCE(NULLIF($5::text, ''), upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 10))))
+RETURNING id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
+          public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
+          match_same_province, vip_until, broadcast_cards
 `
 
 type CreateIdentityParams struct {
@@ -23,14 +39,17 @@ type CreateIdentityParams struct {
 	Nickname   string      `json:"nickname"`
 	AvatarSeed string      `json:"avatar_seed"`
 	CreatedIp  *netip.Addr `json:"created_ip"`
+	PublicCode string      `json:"public_code"`
 }
 
+// public_code 为空时由数据库生成一个随机的 10 位十六进制编号（兼容测试与其他调用方）。
 func (q *Queries) CreateIdentity(ctx context.Context, arg CreateIdentityParams) (Identity, error) {
 	row := q.db.QueryRow(ctx, createIdentity,
 		arg.TokenHash,
 		arg.Nickname,
 		arg.AvatarSeed,
 		arg.CreatedIp,
+		arg.PublicCode,
 	)
 	var i Identity
 	err := row.Scan(
@@ -43,16 +62,149 @@ func (q *Queries) CreateIdentity(ctx context.Context, arg CreateIdentityParams) 
 		&i.RevokedAt,
 		&i.CreatedAt,
 		&i.LastSeenAt,
+		&i.PublicCode,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
+		&i.BroadcastCards,
+	)
+	return i, err
+}
+
+const extendIdentityVip = `-- name: ExtendIdentityVip :one
+
+UPDATE identities
+SET vip_until = GREATEST(COALESCE(vip_until, now()), now()) + make_interval(days => $1::int),
+    broadcast_cards = broadcast_cards + $2::int
+WHERE id = $3
+RETURNING id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
+          public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
+          match_same_province, vip_until, broadcast_cards
+`
+
+type ExtendIdentityVipParams struct {
+	VipDays int32       `json:"vip_days"`
+	Cards   int32       `json:"cards"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+// ---- 权益 ----
+func (q *Queries) ExtendIdentityVip(ctx context.Context, arg ExtendIdentityVipParams) (Identity, error) {
+	row := q.db.QueryRow(ctx, extendIdentityVip, arg.VipDays, arg.Cards, arg.ID)
+	var i Identity
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.Nickname,
+		&i.AvatarSeed,
+		&i.AccountID,
+		&i.CreatedIp,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.PublicCode,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
+		&i.BroadcastCards,
+	)
+	return i, err
+}
+
+const getIdentityByID = `-- name: GetIdentityByID :one
+SELECT id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
+       public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
+       match_same_province, vip_until, broadcast_cards
+FROM identities
+WHERE id = $1
+`
+
+func (q *Queries) GetIdentityByID(ctx context.Context, id pgtype.UUID) (Identity, error) {
+	row := q.db.QueryRow(ctx, getIdentityByID, id)
+	var i Identity
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.Nickname,
+		&i.AvatarSeed,
+		&i.AccountID,
+		&i.CreatedIp,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.PublicCode,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
+		&i.BroadcastCards,
+	)
+	return i, err
+}
+
+const getIdentityByPublicCode = `-- name: GetIdentityByPublicCode :one
+SELECT id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
+       public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
+       match_same_province, vip_until, broadcast_cards
+FROM identities
+WHERE public_code = $1
+`
+
+func (q *Queries) GetIdentityByPublicCode(ctx context.Context, publicCode string) (Identity, error) {
+	row := q.db.QueryRow(ctx, getIdentityByPublicCode, publicCode)
+	var i Identity
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.Nickname,
+		&i.AvatarSeed,
+		&i.AccountID,
+		&i.CreatedIp,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.PublicCode,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
+		&i.BroadcastCards,
 	)
 	return i, err
 }
 
 const getIdentityByTokenHash = `-- name: GetIdentityByTokenHash :one
-SELECT id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at
+
+SELECT id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
+       public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
+       match_same_province, vip_until, broadcast_cards
 FROM identities
 WHERE token_hash = $1
 `
 
+// ---- 身份 ----
 func (q *Queries) GetIdentityByTokenHash(ctx context.Context, tokenHash []byte) (Identity, error) {
 	row := q.db.QueryRow(ctx, getIdentityByTokenHash, tokenHash)
 	var i Identity
@@ -66,6 +218,56 @@ func (q *Queries) GetIdentityByTokenHash(ctx context.Context, tokenHash []byte) 
 		&i.RevokedAt,
 		&i.CreatedAt,
 		&i.LastSeenAt,
+		&i.PublicCode,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
+		&i.BroadcastCards,
+	)
+	return i, err
+}
+
+const getMatchProfile = `-- name: GetMatchProfile :one
+
+SELECT id, gender, age, province, province_public, tags, clean_mode, match_gender, match_same_province, vip_until
+FROM identities
+WHERE id = $1
+`
+
+type GetMatchProfileRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	Gender            string             `json:"gender"`
+	Age               *int16             `json:"age"`
+	Province          *string            `json:"province"`
+	ProvincePublic    bool               `json:"province_public"`
+	Tags              []string           `json:"tags"`
+	CleanMode         bool               `json:"clean_mode"`
+	MatchGender       string             `json:"match_gender"`
+	MatchSameProvince bool               `json:"match_same_province"`
+	VipUntil          pgtype.Timestamptz `json:"vip_until"`
+}
+
+// ---- 匹配资料快照（入队预取用）----
+func (q *Queries) GetMatchProfile(ctx context.Context, id pgtype.UUID) (GetMatchProfileRow, error) {
+	row := q.db.QueryRow(ctx, getMatchProfile, id)
+	var i GetMatchProfileRow
+	err := row.Scan(
+		&i.ID,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
 	)
 	return i, err
 }
@@ -92,12 +294,38 @@ func (q *Queries) InsertAccessLog(ctx context.Context, arg InsertAccessLogParams
 	return err
 }
 
+const refundBroadcastCard = `-- name: RefundBroadcastCard :exec
+UPDATE identities SET broadcast_cards = broadcast_cards + 1 WHERE id = $1
+`
+
+func (q *Queries) RefundBroadcastCard(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, refundBroadcastCard, id)
+	return err
+}
+
 const revokeIdentity = `-- name: RevokeIdentity :exec
 UPDATE identities SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
 
 func (q *Queries) RevokeIdentity(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, revokeIdentity, id)
+	return err
+}
+
+const setIdentityBenefits = `-- name: SetIdentityBenefits :exec
+UPDATE identities
+SET vip_until = $1, broadcast_cards = $2
+WHERE id = $3
+`
+
+type SetIdentityBenefitsParams struct {
+	VipUntil pgtype.Timestamptz `json:"vip_until"`
+	Cards    int32              `json:"cards"`
+	ID       pgtype.UUID        `json:"id"`
+}
+
+func (q *Queries) SetIdentityBenefits(ctx context.Context, arg SetIdentityBenefitsParams) error {
+	_, err := q.db.Exec(ctx, setIdentityBenefits, arg.VipUntil, arg.Cards, arg.ID)
 	return err
 }
 
@@ -108,4 +336,112 @@ UPDATE identities SET last_seen_at = now() WHERE id = $1
 func (q *Queries) TouchIdentityLastSeen(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, touchIdentityLastSeen, id)
 	return err
+}
+
+const updateIdentityNickname = `-- name: UpdateIdentityNickname :one
+UPDATE identities SET nickname = $2 WHERE id = $1
+RETURNING id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
+          public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
+          match_same_province, vip_until, broadcast_cards
+`
+
+type UpdateIdentityNicknameParams struct {
+	ID       pgtype.UUID `json:"id"`
+	Nickname string      `json:"nickname"`
+}
+
+func (q *Queries) UpdateIdentityNickname(ctx context.Context, arg UpdateIdentityNicknameParams) (Identity, error) {
+	row := q.db.QueryRow(ctx, updateIdentityNickname, arg.ID, arg.Nickname)
+	var i Identity
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.Nickname,
+		&i.AvatarSeed,
+		&i.AccountID,
+		&i.CreatedIp,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.PublicCode,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
+		&i.BroadcastCards,
+	)
+	return i, err
+}
+
+const updateIdentityProfile = `-- name: UpdateIdentityProfile :one
+
+UPDATE identities
+SET gender = $2,
+    age = $3,
+    province = $4,
+    province_public = $5,
+    tags = $6,
+    clean_mode = $7,
+    match_gender = $8,
+    match_same_province = $9
+WHERE id = $1
+RETURNING id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
+          public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
+          match_same_province, vip_until, broadcast_cards
+`
+
+type UpdateIdentityProfileParams struct {
+	ID                pgtype.UUID `json:"id"`
+	Gender            string      `json:"gender"`
+	Age               *int16      `json:"age"`
+	Province          *string     `json:"province"`
+	ProvincePublic    bool        `json:"province_public"`
+	Tags              []string    `json:"tags"`
+	CleanMode         bool        `json:"clean_mode"`
+	MatchGender       string      `json:"match_gender"`
+	MatchSameProvince bool        `json:"match_same_province"`
+}
+
+// ---- 资料与匹配偏好 ----
+func (q *Queries) UpdateIdentityProfile(ctx context.Context, arg UpdateIdentityProfileParams) (Identity, error) {
+	row := q.db.QueryRow(ctx, updateIdentityProfile,
+		arg.ID,
+		arg.Gender,
+		arg.Age,
+		arg.Province,
+		arg.ProvincePublic,
+		arg.Tags,
+		arg.CleanMode,
+		arg.MatchGender,
+		arg.MatchSameProvince,
+	)
+	var i Identity
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.Nickname,
+		&i.AvatarSeed,
+		&i.AccountID,
+		&i.CreatedIp,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.PublicCode,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
+		&i.BroadcastCards,
+	)
+	return i, err
 }

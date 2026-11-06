@@ -1,57 +1,124 @@
-import { useState } from 'react'
-import { Avatar } from '../components/Avatar'
-import { useIdentityStore } from '../stores/identity'
-import { errorMessage } from '../lib/api/errorMessages'
+import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { Drawer } from '../components/Drawer'
+import { Sheet } from '../components/Sheet'
 import { useUiStore } from '../stores/ui'
+import { useIdentityStore } from '../stores/identity'
+import { useRouteTheme } from './useRouteTheme'
+import { DrawerNav } from './DrawerNav'
 
-/** 顶部栏：头像、昵称、换个身份（二次确认）。 */
+/**
+ * 顶栏（how.md 2.1）：☰ 打开抽屉，中间是品牌名，右侧是邀请好友、添加到主屏幕、明暗切换。
+ * 公告跑马灯由 AnnouncementBar 渲染在顶栏下方（U4 接通数据）。
+ */
 export function TopBar() {
-  const nickname = useIdentityStore((s) => s.nickname)
-  const avatarSeed = useIdentityStore((s) => s.avatarSeed)
-  const reset = useIdentityStore((s) => s.reset)
-  const setToast = useUiStore((s) => s.setToast)
   const connected = useUiStore((s) => s.connected)
-  const [confirming, setConfirming] = useState(false)
+  const drawerOpen = useUiStore((s) => s.drawerOpen)
+  const setDrawerOpen = useUiStore((s) => s.setDrawerOpen)
+  const { lobbyPref, toggleLobbyTheme } = useRouteTheme()
+  const [installOpen, setInstallOpen] = useState(false)
+  const publicCode = useIdentityStore((s) => s.publicCode)
+  // 捕获 beforeinstallprompt：支持时直接调用原生安装，否则弹出说明 Sheet。
+  const installEvent = useRef<{ prompt: () => Promise<void> } | null>(null)
 
-  async function doReset() {
-    setConfirming(false)
-    try {
-      await reset()
-      setToast('已更换身份')
-    } catch (e) {
-      setToast(errorMessage((e as { code?: string }).code))
+  useEffect(() => {
+    const onPrompt = (e: Event) => {
+      e.preventDefault()
+      installEvent.current = e as unknown as { prompt: () => Promise<void> }
     }
+    window.addEventListener('beforeinstallprompt', onPrompt)
+    return () => window.removeEventListener('beforeinstallprompt', onPrompt)
+  }, [])
+
+  function handleInstall() {
+    const ev = installEvent.current
+    if (ev) {
+      void ev.prompt()
+      installEvent.current = null
+      return
+    }
+    setInstallOpen(true)
   }
 
+  const dark = lobbyPref === 'dark'
+
   return (
-    <header className="border-b border-slate-800 px-4 py-2 flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        <Avatar seed={avatarSeed || 'anonymous'} size={32} />
-        <span className="text-sm text-slate-200">{nickname || '加载中…'}</span>
-        {connected && <span data-testid="ws-connected" aria-label="已连接" className="w-2 h-2 rounded-full bg-green-500" />}
-      </div>
-      <button
-        type="button"
-        className="text-sm px-3 py-1 rounded bg-slate-800 hover:bg-slate-700"
-        onClick={() => setConfirming(true)}
-      >
-        换个身份
-      </button>
-      {confirming && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" role="dialog" aria-label="换身份确认">
-          <div className="bg-slate-900 rounded-lg p-4 w-full max-w-sm">
-            <p className="mb-4 text-slate-200">确定要换个身份吗？当前的聊天会全部离开。</p>
-            <div className="flex justify-end gap-2">
-              <button type="button" className="px-3 py-1 rounded bg-slate-700" onClick={() => setConfirming(false)}>
-                取消
-              </button>
-              <button type="button" className="px-3 py-1 rounded bg-indigo-600" onClick={doReset}>
-                确认更换
-              </button>
-            </div>
+    <>
+      <header className="sticky top-0 z-30 border-b border-lobby-line bg-lobby-card/80 backdrop-blur-[20px]">
+        <div className="mx-auto flex h-16 max-w-[1200px] items-center justify-between px-4">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              aria-label="菜单"
+              onClick={() => setDrawerOpen(true)}
+              className="rounded-sm px-2 py-1 text-lg text-lobby-ink transition duration-150 ease-out hover:bg-lobby-bg"
+            >
+              ☰
+            </button>
+          </div>
+
+          <div className="text-center">
+            <div className="text-[15px] font-bold tracking-tight text-lobby-ink">AnonChat 匿名聊天</div>
+            <div className="text-[10px] tracking-[0.2em] text-lobby-sub">ANONYMOUS CHAT</div>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <Link
+              to="/p/new"
+              aria-label="邀请好友"
+              className="rounded-sm px-2 py-1 text-base transition duration-150 ease-out hover:bg-lobby-bg"
+            >
+              👤+
+            </Link>
+            <button
+              type="button"
+              aria-label="添加到主屏幕"
+              onClick={handleInstall}
+              className="rounded-sm px-2 py-1 text-base transition duration-150 ease-out hover:bg-lobby-bg"
+            >
+              📱
+            </button>
+            <button
+              type="button"
+              aria-label="切换明暗主题"
+              onClick={toggleLobbyTheme}
+              className="rounded-sm px-2 py-1 text-base transition duration-150 ease-out hover:bg-lobby-bg"
+            >
+              {dark ? '☀' : '🌙'}
+            </button>
           </div>
         </div>
-      )}
-    </header>
+      </header>
+
+      <Drawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        footer={
+          <div className="space-y-1 text-xs text-lobby-sub">
+            <div>匿名编号：{publicCode || '—'}</div>
+            <div className="flex items-center gap-2">
+              <span className={`h-2 w-2 rounded-full ${connected ? 'bg-brand' : 'bg-lobby-line'}`} />
+              {connected ? '已连接' : '连接中…'}
+            </div>
+          </div>
+        }
+      >
+        <DrawerNav onNavigate={() => setDrawerOpen(false)} />
+      </Drawer>
+
+      <Sheet open={installOpen} title="添加到主屏幕" onClose={() => setInstallOpen(false)}>
+        <div className="space-y-3 text-sm text-lobby-sub">
+          <p>把 AnonChat 添加到主屏幕，下次可以从桌面直接打开。</p>
+          <div>
+            <div className="mb-1 font-medium text-lobby-ink">iOS（Safari）</div>
+            <p>点击底部「分享」按钮 → 选择「添加到主屏幕」。</p>
+          </div>
+          <div>
+            <div className="mb-1 font-medium text-lobby-ink">Android（Chrome）</div>
+            <p>点击右上角菜单 → 选择「安装应用」或「添加到主屏幕」。</p>
+          </div>
+        </div>
+      </Sheet>
+    </>
   )
 }

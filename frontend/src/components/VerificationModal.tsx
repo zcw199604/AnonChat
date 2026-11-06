@@ -53,13 +53,13 @@ export function VerificationModal() {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" role="dialog" aria-label="实名验证">
-      <div className="bg-slate-900 rounded-lg p-4 w-full max-w-sm space-y-3">
-        <h2 className="text-lg font-semibold">实名验证</h2>
-        <p className="text-sm text-slate-400">完成手机号验证后即可开始聊天。其他用户看不到你的手机号。</p>
+    <div className="animate-fade-up fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" role="dialog" aria-label="实名验证">
+      <div className="rounded-panel bg-lobby-card p-5 w-full max-w-sm space-y-3 shadow-soft">
+        <h2 className="text-base font-semibold text-lobby-ink">实名验证</h2>
+        <p className="text-sm text-lobby-sub">完成手机号验证后即可开始聊天。其他用户看不到你的手机号。</p>
         <input
           aria-label="手机号"
-          className="w-full bg-slate-800 rounded px-3 py-2"
+          className="w-full rounded-sm border border-lobby-line bg-lobby-bg px-3 py-2 text-lobby-ink"
           placeholder="手机号"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
@@ -67,7 +67,7 @@ export function VerificationModal() {
         <div className="flex gap-2">
           <button
             type="button"
-            className="px-3 py-2 rounded bg-slate-700 disabled:opacity-40"
+            className="rounded-sm bg-lobby-bg px-3 py-2 text-lobby-ink transition duration-150 ease-out disabled:opacity-40"
             disabled={busy || countdown > 0 || phone === ''}
             onClick={send}
           >
@@ -76,18 +76,18 @@ export function VerificationModal() {
         </div>
         <input
           aria-label="验证码"
-          className="w-full bg-slate-800 rounded px-3 py-2"
+          className="w-full rounded-sm border border-lobby-line bg-lobby-bg px-3 py-2 text-lobby-ink"
           placeholder="验证码"
           value={code}
           onChange={(e) => setCode(e.target.value)}
         />
         <div className="flex justify-end gap-2">
-          <button type="button" className="px-3 py-1 rounded bg-slate-700" onClick={close}>
+          <button type="button" className="rounded-sm px-3 py-1.5 text-sm text-lobby-sub transition duration-150 ease-out hover:bg-lobby-bg" onClick={close}>
             稍后再说
           </button>
           <button
             type="button"
-            className="px-3 py-1 rounded bg-indigo-600 disabled:opacity-40"
+            className="rounded-sm bg-brand px-3 py-1.5 text-sm text-white transition duration-150 ease-out disabled:opacity-40"
             disabled={busy || code === ''}
             onClick={confirm}
           >

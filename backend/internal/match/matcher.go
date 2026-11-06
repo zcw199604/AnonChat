@@ -3,6 +3,7 @@ package match
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -10,10 +11,24 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
 
+// PrefProfile 是匹配用的资料快照（how.md 3.4：入队时一次性查出，匹配时只在内存判断）。
+type PrefProfile struct {
+	Gender         string
+	Age            *int16
+	Province       *string
+	ProvincePublic bool
+	Tags           []string
+	CleanMode      bool
+	MatchGender    string
+	MatchSameProv  bool
+	VIP            bool
+}
+
 // IdentityContext 是某身份的配对约束快照（入队时一次性查出，匹配时仅做内存判断）。
 type IdentityContext struct {
 	Blocked map[pgtype.UUID]struct{}
 	Recent  map[pgtype.UUID]struct{}
+	Profile PrefProfile
 }
 
 // Prefetcher 在入队时（匹配 goroutine 之外、带超时）一次性拉取身份约束。
@@ -29,6 +44,8 @@ type Matcher interface {
 	Cancel(identityID pgtype.UUID)
 	// Leave 将身份移出队列（用于 match.leave）。
 	Leave(identityID pgtype.UUID)
+	// QueueLen 返回当前排队人数（用于在线统计）。
+	QueueLen() int
 }
 
 type cmdKind int
@@ -58,16 +75,20 @@ type queueEntry struct {
 // memoryMatcher 是单 goroutine 驱动的内存匹配器：队列操作经命令通道串行化，配对判断只在内存进行。
 type memoryMatcher struct {
 	prefetcher Prefetcher
-	onPair     func(a, b *store.Identity) error
+	onPair     func(a, b *queueEntry) error
 	relaxAfter time.Duration
 	tick       time.Duration
 	now        func() time.Time
 	cmds       chan command
 	queue      []*queueEntry
+
+	// mu/queueLen 只用于对外提供线程安全的排队人数读数（仅供统计）。
+	mu       sync.Mutex
+	queueLen int
 }
 
 // NewMemoryMatcher 创建内存匹配器。tick 为定时全量扫描间隔（默认 1s）。
-func NewMemoryMatcher(prefetcher Prefetcher, onPair func(a, b *store.Identity) error, relaxAfter, tick time.Duration) *memoryMatcher {
+func NewMemoryMatcher(prefetcher Prefetcher, onPair func(a, b *queueEntry) error, relaxAfter, tick time.Duration) *memoryMatcher {
 	if relaxAfter <= 0 {
 		relaxAfter = 15 * time.Second
 	}
@@ -121,6 +142,20 @@ func (m *memoryMatcher) Cancel(identityID pgtype.UUID) {
 // Leave 实现 Matcher。
 func (m *memoryMatcher) Leave(identityID pgtype.UUID) { m.do(command{kind: cmdLeave, id: identityID}) }
 
+// QueueLen 实现 Matcher：读取最近一次处理的队列长度（原子读，仅用于统计）。
+func (m *memoryMatcher) QueueLen() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.queueLen
+}
+
+// setQueueLen 更新对外的排队人数镜像。
+func (m *memoryMatcher) setQueueLen(n int) {
+	m.mu.Lock()
+	m.queueLen = n
+	m.mu.Unlock()
+}
+
 // do 同步提交一条命令并等待处理完成。
 func (m *memoryMatcher) do(c command) {
 	c.done = make(chan struct{})
@@ -133,13 +168,18 @@ func (m *memoryMatcher) process(c command) {
 	switch c.kind {
 	case cmdEnqueue:
 		m.remove(c.ident.ID)
-		m.queue = append(m.queue, &queueEntry{ident: c.ident, enqueuedAt: m.now(), ic: c.ic})
+		entry := &queueEntry{ident: c.ident, enqueuedAt: m.now(), ic: c.ic}
+		m.queue = append(m.queue, entry)
+		m.setQueueLen(len(m.queue))
 		// 入队只与现有队列逐个比较（O(N)）。
-		m.tryFrom(len(m.queue) - 1)
+		m.tryPairFor(entry)
+		m.setQueueLen(len(m.queue))
 	case cmdCancel, cmdLeave:
 		m.remove(c.id)
+		m.setQueueLen(len(m.queue))
 	case cmdRequeueFront:
 		m.queue = append(c.entries, m.queue...)
+		m.setQueueLen(len(m.queue))
 		m.tryMatchAll()
 	}
 }
@@ -155,40 +195,73 @@ func (m *memoryMatcher) remove(id pgtype.UUID) {
 	m.queue = out
 }
 
-// tryFrom 只尝试让指定下标的条目与其余条目配对（O(N)）。
-func (m *memoryMatcher) tryFrom(i int) {
-	if i < 0 || i >= len(m.queue) {
-		return
+// removeEntry 从队列中移除指定条目。
+func (m *memoryMatcher) removeEntry(target *queueEntry) {
+	out := m.queue[:0]
+	for _, e := range m.queue {
+		if e != target {
+			out = append(out, e)
+		}
 	}
-	a := m.queue[i]
-	for j := 0; j < len(m.queue); j++ {
-		if j == i {
+	m.queue = out
+}
+
+// contains 判断条目是否仍在队列中。
+func (m *memoryMatcher) contains(target *queueEntry) bool {
+	for _, e := range m.queue {
+		if e == target {
+			return true
+		}
+	}
+	return false
+}
+
+// tryPairFor 为指定条目挑选最合适的候选并配对（单次扫描 O(N)）。
+// 候选人选择：标签交集最大者优先；交集相同时选排队最久的。
+func (m *memoryMatcher) tryPairFor(a *queueEntry) bool {
+	if !m.contains(a) {
+		return false
+	}
+	var best *queueEntry
+	bestScore := -1
+	for _, b := range m.queue {
+		if b == a {
 			continue
 		}
-		b := m.queue[j]
-		if m.canPair(a, b) {
-			m.removePair(i, j)
-			m.executePair(a, b)
-			return
+		if !m.canPair(a, b) {
+			continue
+		}
+		score := tagScore(a.ic.Profile.Tags, b.ic.Profile.Tags)
+		if score > bestScore || (score == bestScore && best != nil && b.enqueuedAt.Before(best.enqueuedAt)) {
+			best = b
+			bestScore = score
 		}
 	}
+	if best == nil {
+		return false
+	}
+	m.removeEntry(a)
+	m.removeEntry(best)
+	m.executePair(a, best)
+	return true
 }
 
 // tryMatchAll 全量扫描（定时器触发），反复配对直到无法再配对。
 func (m *memoryMatcher) tryMatchAll() {
 	for {
 		paired := false
-		for i := 0; i < len(m.queue) && !paired; i++ {
-			for j := i + 1; j < len(m.queue); j++ {
-				if m.canPair(m.queue[i], m.queue[j]) {
-					a, b := m.queue[i], m.queue[j]
-					m.removePair(i, j)
-					m.executePair(a, b)
-					paired = true
-					break
-				}
+		snapshot := make([]*queueEntry, len(m.queue))
+		copy(snapshot, m.queue)
+		for _, a := range snapshot {
+			if !m.contains(a) {
+				continue
+			}
+			if m.tryPairFor(a) {
+				paired = true
+				break
 			}
 		}
+		m.setQueueLen(len(m.queue))
 		if !paired {
 			return
 		}
@@ -198,7 +271,7 @@ func (m *memoryMatcher) tryMatchAll() {
 // executePair 在独立 goroutine 中建会话并推送；失败则把两人放回队首。
 func (m *memoryMatcher) executePair(a, b *queueEntry) {
 	go func() {
-		if err := m.onPair(a.ident, b.ident); err != nil {
+		if err := m.onPair(a, b); err != nil {
 			select {
 			case m.cmds <- command{kind: cmdRequeueFront, entries: []*queueEntry{a, b}}:
 			default:
@@ -226,14 +299,55 @@ func (m *memoryMatcher) canPair(a, b *queueEntry) bool {
 			return false
 		}
 	}
+	// 硬条件（清流、性别、同省）不随时间放宽。
+	return compatible(a.ic.Profile, b.ic.Profile)
+}
+
+// compatible 判断两份资料快照是否双向兼容（how.md 3.4）。
+// 非 VIP 的 match_gender / match_same_province 一律视为 any/false（服务端判定）。
+func compatible(a, b PrefProfile) bool {
+	if a.CleanMode != b.CleanMode {
+		return false
+	}
+	if !genderMatches(a, b) || !genderMatches(b, a) {
+		return false
+	}
+	if !provinceMatches(a, b) || !provinceMatches(b, a) {
+		return false
+	}
 	return true
 }
 
-// removePair 从队列移除下标 i、j（j 可能小于 i）。
-func (m *memoryMatcher) removePair(i, j int) {
-	if i > j {
-		i, j = j, i
+// genderMatches 判断 a 的性别筛选是否接受 b（gender=secret 的人不满足任何性别筛选）。
+func genderMatches(a, b PrefProfile) bool {
+	if !a.VIP || a.MatchGender == "" || a.MatchGender == "any" {
+		return true
 	}
-	m.queue = append(m.queue[:j], m.queue[j+1:]...)
-	m.queue = append(m.queue[:i], m.queue[i+1:]...)
+	return b.Gender == a.MatchGender && (b.Gender == "male" || b.Gender == "female")
+}
+
+// provinceMatches 判断 a 的同省要求是否被 b 满足。
+func provinceMatches(a, b PrefProfile) bool {
+	if !a.VIP || !a.MatchSameProv {
+		return true
+	}
+	return a.Province != nil && b.Province != nil && *a.Province == *b.Province
+}
+
+// tagScore 返回两人标签的交集大小。
+func tagScore(a, b []string) int {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	set := make(map[string]struct{}, len(a))
+	for _, t := range a {
+		set[t] = struct{}{}
+	}
+	score := 0
+	for _, t := range b {
+		if _, ok := set[t]; ok {
+			score++
+		}
+	}
+	return score
 }

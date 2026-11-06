@@ -314,3 +314,16 @@ func parseUUID(str string) (pgtype.UUID, error) {
 	}
 	return u, nil
 }
+
+// TotalOnline 返回所有房间的在线人数合计（用于在线统计）。
+func (s *Service) TotalOnline(ctx context.Context) int {
+	rows, err := s.q.ListRooms(ctx)
+	if err != nil {
+		return 0
+	}
+	total := 0
+	for _, r := range rows {
+		total += s.hub.Count(presenceKey(r.ID))
+	}
+	return total
+}

@@ -5,9 +5,11 @@ import { errorMessage } from '../../lib/api/errorMessages'
 import { useUiStore } from '../../stores/ui'
 import { postBottle, pickBottle, throwBackBottle, replyBottle, myBottles, reportBottle } from '../../lib/api/client'
 import type { PickedBottle, MyBottle } from '../../lib/api/client'
+import { Card } from '../../components/Card'
 
 type Tab = 'throw' | 'pick' | 'mine'
 
+/** 匿名信（原漂流瓶，how.md 2.4）：浅色，写信卡片用信纸样式。 */
 export default function BottlesPage() {
   const nav = useNavigate()
   const ws = getWsClient()
@@ -93,93 +95,134 @@ export default function BottlesPage() {
 
   const throwLen = [...content].length
 
+  const tabClass = (k: Tab) =>
+    `rounded-sm px-3 py-1.5 text-sm transition duration-150 ease-out ${
+      tab === k ? 'bg-brand text-white' : 'text-lobby-sub hover:text-lobby-ink'
+    }`
+
   return (
-    <main className="mx-auto max-w-3xl px-4 py-6">
-      <h1 className="text-2xl font-bold mb-4">漂流瓶</h1>
-      <div className="flex gap-2 mb-4 text-sm">
-        {([
-          ['throw', '扔瓶子'],
-          ['pick', '捞瓶子'],
-          ['mine', unreadBadge > 0 ? `我的瓶子 (${unreadBadge})` : '我的瓶子'],
-        ] as Array<[Tab, string]>).map(([k, label]) => (
-          <button
-            key={k}
-            type="button"
-            className={`px-3 py-1 rounded ${tab === k ? 'bg-indigo-600 text-white' : 'bg-slate-800'}`}
-            onClick={() => setTab(k)}
-          >
-            {label}
-          </button>
-        ))}
+    <main className="mx-auto max-w-3xl px-4 py-8">
+      <h1 className="text-2xl font-bold tracking-tight text-lobby-ink">匿名信</h1>
+      <p className="mb-6 text-sm text-lobby-sub">漂流瓶：写一封没有署名的信，等有缘人捞起。</p>
+
+      <div className="mb-5 flex gap-2">
+        <button type="button" className={tabClass('throw')} onClick={() => setTab('throw')}>
+          写信
+        </button>
+        <button type="button" className={tabClass('pick')} onClick={() => setTab('pick')}>
+          捞一封
+        </button>
+        <button type="button" className={tabClass('mine')} onClick={() => setTab('mine')}>
+          {unreadBadge > 0 ? `我的信 (${unreadBadge})` : '我的信'}
+        </button>
       </div>
 
       {tab === 'throw' && (
-        <div className="space-y-2">
-          <textarea
-            aria-label="瓶子内容"
-            className="w-full bg-slate-800 rounded p-3"
-            rows={6}
-            maxLength={500}
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder="写点什么，投进海里…"
-          />
-          <div className="text-xs text-slate-500">{throwLen} / 500</div>
-          <button type="button" className="px-4 py-2 rounded bg-indigo-600 text-white disabled:opacity-40" disabled={content.trim() === '' || throwLen > 500} onClick={doThrow}>
-            投入海里
-          </button>
-        </div>
+        <Card className="p-5">
+          <div className="flex gap-4">
+            <span aria-hidden className="w-px shrink-0 rounded-full bg-brand/40" />
+            <div className="flex-1 space-y-3">
+              <textarea
+                aria-label="瓶子内容"
+                className="w-full resize-none rounded-sm border border-lobby-line bg-lobby-bg p-3 text-sm text-lobby-ink outline-none"
+                rows={6}
+                maxLength={500}
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="写点什么，投进海里…"
+              />
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-lobby-sub">{throwLen} / 500</span>
+                <button
+                  type="button"
+                  className="rounded-sm bg-brand px-4 py-2 text-sm text-white transition duration-150 ease-out disabled:opacity-40"
+                  disabled={content.trim() === '' || throwLen > 500}
+                  onClick={doThrow}
+                >
+                  投入海里
+                </button>
+              </div>
+            </div>
+          </div>
+        </Card>
       )}
 
       {tab === 'pick' && (
         <div className="space-y-3">
-          <button type="button" className="px-4 py-2 rounded bg-indigo-600 text-white" onClick={doPick}>
+          <button
+            type="button"
+            className="rounded-sm bg-brand px-4 py-2 text-sm text-white transition duration-150 ease-out"
+            onClick={doPick}
+          >
             捞一个瓶子
           </button>
-          {emptySea && <p className="text-slate-400">海里暂时没有瓶子，晚点再来看看。</p>}
+          {emptySea && <p className="text-sm text-lobby-sub">海里暂时没有瓶子，晚点再来看看。</p>}
           {picked && (
-            <div className="rounded-lg bg-slate-900 border border-slate-800 p-4 space-y-3">
-              <p className="whitespace-pre-wrap break-words text-slate-100">{picked.content}</p>
+            <Card className="space-y-3 p-5">
+              <p className="whitespace-pre-wrap break-words text-sm text-lobby-ink">{picked.content}</p>
               <div className="flex gap-2 text-sm">
-                <button type="button" className="px-2 py-1 rounded bg-slate-800" onClick={doThrowBack}>
+                <button
+                  type="button"
+                  className="rounded-sm bg-lobby-bg px-3 py-1 text-lobby-ink transition duration-150 ease-out"
+                  onClick={doThrowBack}
+                >
                   扔回海里
                 </button>
-                <button type="button" className="px-2 py-1 rounded bg-slate-800" onClick={doReport}>
+                <button
+                  type="button"
+                  className="rounded-sm bg-lobby-bg px-3 py-1 text-lobby-ink transition duration-150 ease-out"
+                  onClick={doReport}
+                >
                   举报
                 </button>
               </div>
               <div className="flex gap-2">
                 <input
                   aria-label="回复内容"
-                  className="flex-1 bg-slate-800 rounded px-2 py-1"
+                  className="flex-1 rounded-sm border border-lobby-line bg-lobby-bg px-3 py-1.5 text-sm text-lobby-ink"
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
                   placeholder="回复这个瓶子…"
                 />
-                <button type="button" className="px-3 py-1 rounded bg-indigo-600 text-white disabled:opacity-40" disabled={replyText.trim() === ''} onClick={doReply}>
+                <button
+                  type="button"
+                  className="rounded-sm bg-brand px-4 py-1.5 text-sm text-white transition duration-150 ease-out disabled:opacity-40"
+                  disabled={replyText.trim() === ''}
+                  onClick={doReply}
+                >
                   回复
                 </button>
               </div>
-            </div>
+            </Card>
           )}
         </div>
       )}
 
       {tab === 'mine' && (
-        <div className="space-y-2">
-          {mine.length === 0 && <p className="text-slate-400">你还没有投放瓶子。</p>}
+        <div className="space-y-3">
+          {mine.length === 0 && <p className="text-sm text-lobby-sub">你还没有投放瓶子。</p>}
           {mine.map((b) => (
-            <div key={b.id} className="rounded-lg bg-slate-900 border border-slate-800 p-4">
-              <p className="text-slate-100 whitespace-pre-wrap break-words">{b.contentPreview}</p>
-              <p className="text-xs text-slate-500 mt-1">{new Date(b.createdAt).toLocaleString()}</p>
+            <Card key={b.id} className="p-5">
+              <p className="whitespace-pre-wrap break-words text-sm text-lobby-ink">{b.contentPreview}</p>
+              <p className="mt-1 text-xs text-lobby-sub">{new Date(b.createdAt).toLocaleString()}</p>
               <div className="mt-2 space-y-1">
                 {b.replies.map((r) => (
-                  <button key={r.conversationId} type="button" className="block text-sm text-indigo-400" onClick={() => nav(`/bottles/${r.conversationId}`)}>
-                    查看回复 {r.unread > 0 && <span className="ml-1 text-xs bg-red-600 text-white rounded px-1">{r.unread}</span>}
+                  <button
+                    key={r.conversationId}
+                    type="button"
+                    className="block text-sm text-brand transition duration-150 ease-out"
+                    onClick={() => nav(`/bottles/${r.conversationId}`)}
+                  >
+                    查看回复
+                    {r.unread > 0 && (
+                      <span className="ml-1 rounded-full bg-brand/15 px-1.5 text-xs text-brand">
+                        {r.unread}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
-            </div>
+            </Card>
           ))}
         </div>
       )}

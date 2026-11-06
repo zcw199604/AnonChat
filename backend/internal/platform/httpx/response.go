@@ -31,6 +31,14 @@ const (
 	// CodeForbiddenOrigin 表示修改类请求的 Origin 不在白名单内。
 	// 注意：how.md 的错误码表中未列出此码，属于本批安全加固新增，已在交付说明中注明。
 	CodeForbiddenOrigin ErrorCode = "forbidden_origin"
+
+	// 本包（资料 / VIP / 广播 / 故事书）新增错误码（how.md 3.7）。
+	CodeVIPRequired     ErrorCode = "vip_required"
+	CodeInvalidCode     ErrorCode = "invalid_code"
+	CodeNoBroadcastCard ErrorCode = "no_broadcast_card"
+	CodeStoryTaken      ErrorCode = "story_taken"
+	CodeStoryNotValid   ErrorCode = "story_not_valid"
+	CodeNotFound        ErrorCode = "not_found"
 )
 
 // errorBody 是错误响应体中的 error 对象。
@@ -82,6 +90,14 @@ func statusForCode(code ErrorCode) int {
 		return http.StatusTooManyRequests
 	case CodeContentBlocked:
 		return http.StatusUnprocessableEntity
+	case CodeVIPRequired:
+		return http.StatusForbidden
+	case CodeInvalidCode:
+		return http.StatusBadRequest
+	case CodeNoBroadcastCard, CodeStoryTaken, CodeStoryNotValid:
+		return http.StatusConflict
+	case CodeNotFound:
+		return http.StatusNotFound
 	case CodeInvalidRequest:
 		return http.StatusBadRequest
 	case CodeInternal:

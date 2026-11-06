@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useIdentityStore, onIdentityReset } from '../stores/identity'
 import { useConversationsStore } from '../stores/conversations'
 import { usePresenceStore } from '../stores/presence'
@@ -8,6 +8,8 @@ import { getWsClient } from '../lib/ws'
 import { errorMessage } from '../lib/api/errorMessages'
 import { getMe } from '../lib/api/client'
 import { TopBar } from './TopBar'
+import { AnnouncementBar } from './AnnouncementBar'
+import { isChatRoute, syncLobbyThemeFromStorage, useRouteTheme } from './useRouteTheme'
 import { Toast } from '../components/Toast'
 import { KickedOverlay } from '../components/KickedOverlay'
 import { VerificationModal } from '../components/VerificationModal'
@@ -19,13 +21,54 @@ import BottlesPage from '../features/bottles/BottlesPage'
 import BottleConversationPage from '../features/bottles/BottleConversationPage'
 import PrivateNewPage from '../features/private/PrivateNewPage'
 import PrivateJoinPage from '../features/private/PrivateJoinPage'
+import VipPage from '../features/vip/VipPage'
+import StoriesPage from '../features/stories/StoriesPage'
+import StoryNewPage from '../features/stories/StoryNewPage'
+import StoryPlayPage from '../features/stories/StoryPlayPage'
+import WorkPage from '../features/stories/WorkPage'
 
 const AdminPage = lazy(() => import('../features/admin/AdminPage'))
 
-function Shell() {
+/**
+ * 两层固定定位背景：浅色层始终存在，暗色层按路由切换 opacity（300ms ease-out）。
+ * 从大厅进入聊天页时由浅变暗。
+ */
+function BackgroundLayers() {
+  const { theme } = useRouteTheme()
   return (
-    <div className="min-h-screen flex flex-col">
-      <TopBar />
+    <>
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 -z-10 bg-lobby-bg"
+        data-testid="bg-light"
+      />
+      <div
+        aria-hidden
+        className="theme-layer pointer-events-none fixed inset-0 -z-10"
+        data-testid="bg-dark"
+        style={{
+          background:
+            'linear-gradient(160deg, var(--color-night-from), var(--color-night-to))',
+          opacity: theme === 'dark' ? 1 : 0,
+        }}
+      />
+    </>
+  )
+}
+
+function Shell() {
+  const { pathname } = useLocation()
+  const inPrivateConversation = useUiStore((s) => s.inPrivateConversation)
+  const chat = isChatRoute(pathname, inPrivateConversation)
+
+  return (
+    <div className="relative flex min-h-screen flex-col">
+      {!chat && (
+        <>
+          <TopBar />
+          <AnnouncementBar />
+        </>
+      )}
       <div className="flex-1">
         <Routes>
           <Route path="/" element={<HomePage />} />
@@ -36,6 +79,11 @@ function Shell() {
           <Route path="/bottles/:conversationId" element={<BottleConversationPage />} />
           <Route path="/p/new" element={<PrivateNewPage />} />
           <Route path="/p/:token" element={<PrivateJoinPage />} />
+          <Route path="/vip" element={<VipPage />} />
+          <Route path="/stories" element={<StoriesPage />} />
+          <Route path="/stories/new" element={<StoryNewPage />} />
+          <Route path="/stories/:storyId/play" element={<StoryPlayPage />} />
+          <Route path="/works/:workId" element={<WorkPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
@@ -51,6 +99,7 @@ export default function App() {
     if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
       return
     }
+    syncLobbyThemeFromStorage()
     let cancelled = false
     void (async () => {
       try {
@@ -100,14 +149,15 @@ export default function App() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="relative min-h-screen text-lobby-ink">
+      <BackgroundLayers />
       <Toast />
       <KickedOverlay />
       <Routes>
         <Route
           path="/admin/*"
           element={
-            <Suspense fallback={<div className="p-8 text-slate-400">加载中…</div>}>
+            <Suspense fallback={<div className="p-8 text-lobby-sub">加载中…</div>}>
               <AdminPage />
             </Suspense>
           }

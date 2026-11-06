@@ -14,6 +14,8 @@ export function useChat(conversationId: string | null) {
   const remove = useConversationsStore((s) => s.removeMessages)
   const lastRead = useRef(0)
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
+  const [typing, setTyping] = useState(false)
+  const typingTimer = useRef<number | null>(null)
 
   // 会话详情（myMemberId / peer）。
   useEffect(() => {
@@ -52,9 +54,22 @@ export function useChat(conversationId: string | null) {
       const x = d as { conversationId: string; messageIds: number[] }
       if (x.conversationId === conversationId) remove(conversationId, x.messageIds)
     })
+    // 对方正在输入：收到后点亮光点，3 秒内没有新事件自动熄灭。
+    const offTyping = ws.on('typing', (d) => {
+      const x = d as { conversationId: string; memberId: number }
+      if (x.conversationId !== conversationId) return
+      setTyping(true)
+      if (typingTimer.current !== null) window.clearTimeout(typingTimer.current)
+      typingTimer.current = window.setTimeout(() => setTyping(false), 3000)
+    })
     return () => {
       offNew()
       offBurn()
+      offTyping()
+      if (typingTimer.current !== null) {
+        window.clearTimeout(typingTimer.current)
+        typingTimer.current = null
+      }
     }
   }, [conversationId, ws, add, remove])
 
@@ -99,5 +114,11 @@ export function useChat(conversationId: string | null) {
     ws.sendMessage(conversationId, body)
   }
 
-  return { messages, myMemberId, peer, detail: currentDetail, send }
+  /** 上报「输入中」（节流由 Composer 完成）。 */
+  function sendTyping() {
+    if (!conversationId) return
+    ws.send('typing', { conversationId })
+  }
+
+  return { messages, myMemberId, peer, detail: currentDetail, send, sendTyping, typing }
 }

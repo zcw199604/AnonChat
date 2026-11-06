@@ -1,6 +1,6 @@
 # 部署、备份、回滚与上线清单
 
-> 以代码为准，最后同步于 V1。详细步骤另见 `deploy/README.md`。
+> 以代码为准。最后同步：界面改版 + 资料与匹配偏好 + VIP 激活码 + 公告广播 + 故事书（202611062140）。详细步骤另见 `deploy/README.md`。
 
 ## 组成
 
@@ -37,6 +37,15 @@ docker compose exec -it backend /server admin create --username admin
 1. 先 `docker compose exec backend /server migrate down`（迁移均含 Down）。
 2. 再切回旧镜像 tag 并 `docker compose up -d`。
 
+## 本包新增的部署相关事项
+
+- 迁移 `00004_profile_vip_story.sql`：deploy 前请先备份（`pg_dump -Fc`）。该迁移含 `ALTER TYPE conversation_kind ADD VALUE 'story'`，goose 在单事务中执行成功（本机 PostgreSQL 16 已验证 up → down → up 全通过）；Down 会重建枚举类型。
+- 新环境变量 `STORY_MIN_DURATION`（默认 `5m`）：故事有效场次的最短时长。只有 `APP_ENV=test` 允许小于 5 分钟；生产使用默认值即可，无需配置。
+- 新增依赖 `@fontsource-variable/inter@5.3.0`：字体文件随前端构建产物打进 `/assets`，符合 Caddy CSP `default-src 'self'`（`font-src` 走 self），无需额外配置。
+- PWA：`public/manifest.webmanifest` 与 `public/icon.svg` 随静态资源发布；未启用 Service Worker，因此不存在缓存失效问题。
+- 激活码不在站内售卖：部署后由运营方在站外分发，管理员在后台「激活码」页生成批次并**当次下载 CSV**（明文只显示一次）。
+- 审核人力：广播与作品都需人工审核（后台「广播审核」「作品审核」），上线前请安排值班。
+
 ## 上线前人工清单（task.md 12.3，HITL）
 
 - 域名与服务器；ICP 备案、公安联网备案、互联网信息服务安全评估。
@@ -45,3 +54,4 @@ docker compose exec -it backend /server admin create --username admin
 - 短信服务商开通/签名/模板审核并填写 `SMS_*`，实现对应 `SMSProvider`（仅 VERIFICATION_MODE≠off 时必须；off 模式生产允许默认 console 且不发送短信）。
 - `openssl rand -base64 32` 生成并离线备份 `PHONE_ENC_KEY`/`PHONE_HMAC_KEY`。
 - 创建首个管理员；配置异地备份。
+- 本包新增 HITL：用户协议中的 VIP 与 UGC 条款、激活码分发渠道与经营合规、广播与作品的审核人员安排。

@@ -25,6 +25,13 @@ const MESSAGES: Record<string, string> = {
   media_rejected: '图片未通过审核',
   // 本批安全加固新增
   forbidden_origin: '来源不被允许',
+  // 本包新增（how.md 3.7）
+  vip_required: '这是 VIP 特权，兑换激活码后即可使用',
+  invalid_code: '激活码无效或已被使用',
+  no_broadcast_card: '没有可用的广播卡',
+  story_taken: '这个故事已经被认领了',
+  story_not_valid: '这场故事未达到有效条件，不能收录',
+  not_found: '内容不存在或已下架',
 }
 
 /** 把错误码映射为中文提示；未知错误码返回通用提示。 */

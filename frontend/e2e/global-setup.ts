@@ -8,6 +8,11 @@ const E2E_DATABASE_URL =
 
 export const E2E_ADMIN_USER = 'e2eadmin'
 export const E2E_ADMIN_PASS = 'e2e-password-123'
+/** e2eseed 写出的种子数据（含激活码明文），供 E2E 读取。 */
+export const SEED_FILE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '.seed.json',
+)
 
 /** 清空业务表（保留 goose 版本表与种子房间），并创建 E2E 管理员。 */
 export default async function globalSetup(): Promise<void> {
@@ -22,6 +27,13 @@ export default async function globalSetup(): Promise<void> {
   const sql = `
     DELETE FROM admin_audit_logs;
     DELETE FROM admin_sessions;
+    DELETE FROM story_work_likes;
+    DELETE FROM story_works;
+    DELETE FROM stories;
+    DELETE FROM broadcasts;
+    DELETE FROM announcements;
+    DELETE FROM activation_codes;
+    DELETE FROM activation_batches;
     DELETE FROM admin_users;
     DELETE FROM reports;
     DELETE FROM bans;
@@ -39,8 +51,9 @@ export default async function globalSetup(): Promise<void> {
   `
   execFileSync('psql', [E2E_DATABASE_URL, '-v', 'ON_ERROR_STOP=1', '-c', sql], { stdio: 'inherit' })
 
-  // 3. 创建管理员（密码从 stdin 传入，仅 APP_ENV=test 允许）。
-  execFileSync('go', ['run', './cmd/e2eseed', '--username', E2E_ADMIN_USER], {
+  // 3. 创建管理员与一个可用激活码（密码从 stdin 传入，仅 APP_ENV=test 允许）。
+  //    激活码明文写入 seed 文件（明文只出现一次），供 E2E 读取。
+  execFileSync('go', ['run', './cmd/e2eseed', '--username', E2E_ADMIN_USER, '--out', SEED_FILE], {
     cwd: backendDir,
     env,
     input: E2E_ADMIN_PASS,

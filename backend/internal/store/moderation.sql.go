@@ -169,6 +169,39 @@ func (q *Queries) InsertReport(ctx context.Context, arg InsertReportParams) (pgt
 	return id, err
 }
 
+const insertTypedReport = `-- name: InsertTypedReport :one
+INSERT INTO reports (reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, target_type, target_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id
+`
+
+type InsertTypedReportParams struct {
+	ReporterIdentityID pgtype.UUID `json:"reporter_identity_id"`
+	ReportedIdentityID pgtype.UUID `json:"reported_identity_id"`
+	ConversationID     pgtype.UUID `json:"conversation_id"`
+	Reason             string      `json:"reason"`
+	Note               *string     `json:"note"`
+	Snapshot           []byte      `json:"snapshot"`
+	TargetType         string      `json:"target_type"`
+	TargetID           *string     `json:"target_id"`
+}
+
+func (q *Queries) InsertTypedReport(ctx context.Context, arg InsertTypedReportParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, insertTypedReport,
+		arg.ReporterIdentityID,
+		arg.ReportedIdentityID,
+		arg.ConversationID,
+		arg.Reason,
+		arg.Note,
+		arg.Snapshot,
+		arg.TargetType,
+		arg.TargetID,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listReportContextAfter = `-- name: ListReportContextAfter :many
 SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at
 FROM messages m

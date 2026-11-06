@@ -7,6 +7,7 @@ import { errorMessage } from '../../lib/api/errorMessages'
 import { blockMember, createReport } from '../../lib/api/client'
 import { MessageList } from '../../components/MessageList'
 import { Composer } from '../../components/Composer'
+import { GlassPanel } from '../../components/GlassPanel'
 import { ReportDialog } from '../../components/ReportDialog'
 import { BlockConfirm } from '../../components/BlockConfirm'
 
@@ -17,6 +18,7 @@ interface JoinAck {
   online: number
 }
 
+/** 房间聊天（how.md 2.3）：暗色玻璃，房间聊天继续显示昵称。 */
 export default function RoomPage() {
   const { roomId } = useParams()
   const nav = useNavigate()
@@ -95,56 +97,81 @@ export default function RoomPage() {
 
   if (full) {
     return (
-      <main className="mx-auto max-w-xl px-4 py-10 text-center">
-        <p className="text-lg mb-6">房间已满</p>
-        <button type="button" className="px-4 py-2 rounded bg-indigo-600 text-white" onClick={() => nav('/rooms')}>
-          返回房间列表
-        </button>
+      <main className="flex min-h-screen items-center justify-center px-4 text-center">
+        <div className="space-y-4">
+          <p className="text-base text-night-ink">房间已满</p>
+          <button
+            type="button"
+            onClick={() => nav('/rooms')}
+            className="rounded-full bg-brand px-5 py-2 text-sm text-white transition duration-150 ease-out"
+          >
+            返回房间列表
+          </button>
+        </div>
       </main>
     )
   }
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-4 flex flex-col h-[calc(100vh-56px)]">
-      <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800">
-        <button type="button" className="px-2 py-1 rounded bg-slate-800 text-sm" onClick={() => nav('/rooms')}>
-          返回列表
-        </button>
-        <span className="text-sm text-slate-200">房间在线 {online} 人</span>
-        <select
-          aria-label="选择成员"
-          className="bg-slate-800 rounded px-2 py-1 text-sm"
-          value={targetMember ?? ''}
-          onChange={(e) => setTargetMember(e.target.value ? Number(e.target.value) : null)}
-        >
-          <option value="">选择成员…</option>
-          {peers.map((p) => (
-            <option key={p.memberId} value={p.memberId}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          className="px-2 py-1 rounded bg-slate-800 text-sm disabled:opacity-40"
-          disabled={targetMember === null}
-          onClick={() => setBlockOpen(true)}
-        >
-          屏蔽此人
-        </button>
-        <button
-          type="button"
-          className="px-2 py-1 rounded bg-slate-800 text-sm disabled:opacity-40"
-          disabled={targetMember === null}
-          onClick={() => setReportOpen(true)}
-        >
-          举报
-        </button>
-      </div>
-      <MessageList messages={chat.messages} selfMemberId={chat.myMemberId} />
-      <Composer onSend={chat.send} disabled={!joined} />
+    <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
+      <GlassPanel className="h-full rounded-none md:rounded-panel">
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-glass-line px-4 py-3">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => nav('/rooms')}
+              className="rounded-sm px-2 py-1 text-xs text-night-ink transition duration-150 ease-out hover:bg-glass"
+            >
+              返回列表
+            </button>
+            <span className="text-xs text-night-sub">房间在线 {online} 人</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <select
+              aria-label="选择成员"
+              className="rounded-sm border border-glass-line bg-glass px-2 py-1 text-xs text-night-ink"
+              value={targetMember ?? ''}
+              onChange={(e) => setTargetMember(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">选择成员…</option>
+              {peers.map((p) => (
+                <option key={p.memberId} value={p.memberId}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="rounded-sm px-2 py-1 text-xs text-night-ink transition duration-150 ease-out hover:bg-glass disabled:opacity-40"
+              disabled={targetMember === null}
+              onClick={() => setBlockOpen(true)}
+            >
+              屏蔽此人
+            </button>
+            <button
+              type="button"
+              className="rounded-sm px-2 py-1 text-xs text-night-ink transition duration-150 ease-out hover:bg-glass disabled:opacity-40"
+              disabled={targetMember === null}
+              onClick={() => setReportOpen(true)}
+            >
+              举报
+            </button>
+          </div>
+        </header>
+        <MessageList
+          messages={chat.messages}
+          selfMemberId={chat.myMemberId}
+          typing={chat.typing}
+        />
+        <Composer onSend={chat.send} onTyping={chat.sendTyping} disabled={!joined} />
+      </GlassPanel>
       <BlockConfirm open={blockOpen} onCancel={() => setBlockOpen(false)} onConfirm={doBlock} />
-      <ReportDialog open={reportOpen} peerMessages={peerMessages} onClose={() => setReportOpen(false)} onSubmit={doReport} />
+      <ReportDialog
+        open={reportOpen}
+        peerMessages={peerMessages}
+        onClose={() => setReportOpen(false)}
+        onSubmit={doReport}
+      />
     </main>
   )
 }

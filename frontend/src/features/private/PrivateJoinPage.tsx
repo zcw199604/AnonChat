@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { getWsClient } from '../../lib/ws'
 import { useChat } from '../../lib/useChat'
 import { useUiStore } from '../../stores/ui'
@@ -10,11 +10,17 @@ import { privateGate, PRIVATE_GATE_TEXT } from './gate'
 import type { PrivateGate } from './gate'
 import { MessageList } from '../../components/MessageList'
 import { Composer } from '../../components/Composer'
+import { GlassPanel } from '../../components/GlassPanel'
+import { Card } from '../../components/Card'
+import { codename } from '../../lib/codename'
 
+/** 私密链接会话：进入会话后切换为暗色玻璃（how.md 1.3）。 */
 export default function PrivateJoinPage() {
   const { token } = useParams()
+  const nav = useNavigate()
   const ws = getWsClient()
   const setToast = useUiStore((s) => s.setToast)
+  const setInPrivateConversation = useUiStore((s) => s.setInPrivateConversation)
 
   const [info, setInfo] = useState<PrivateLinkInfo | null>(null)
   const [gate, setGate] = useState<PrivateGate | null>(null)
@@ -24,6 +30,12 @@ export default function PrivateJoinPage() {
   const [confirmDestroy, setConfirmDestroy] = useState(false)
 
   const chat = useChat(conversationId)
+
+  // 进入会话后主题切暗色，离开时恢复。
+  useEffect(() => {
+    setInPrivateConversation(Boolean(conversationId))
+    return () => setInPrivateConversation(false)
+  }, [conversationId, setInPrivateConversation])
 
   const join = useCallback(async () => {
     if (!token) return
@@ -36,8 +48,7 @@ export default function PrivateJoinPage() {
       if (code === 'bad_password') {
         setGate('password')
         setToast(errorMessage('bad_password'))
-      }
-      else if (code === 'link_full') setGate('full')
+      } else if (code === 'link_full') setGate('full')
       else if (code === 'link_expired') setGate('expired')
       else if (code === 'conversation_ended') setGate('destroyed')
       else setToast(errorMessage(code))
@@ -83,41 +94,80 @@ export default function PrivateJoinPage() {
   }
 
   if (destroyed) {
-    return <main className="mx-auto max-w-xl px-4 py-10 text-center text-slate-300">会话已被销毁</main>
+    return (
+      <main className="flex min-h-screen items-center justify-center px-4 text-center">
+        <div className="space-y-4">
+          <p className="text-night-ink">会话已被销毁</p>
+          <button
+            type="button"
+            onClick={() => nav('/')}
+            className="rounded-full bg-brand px-5 py-2 text-sm text-white transition duration-150 ease-out"
+          >
+            返回大厅
+          </button>
+        </div>
+      </main>
+    )
   }
 
   if (gate === 'destroyed' || gate === 'expired' || gate === 'full') {
     return (
-      <main className="mx-auto max-w-xl px-4 py-10 text-center">
-        <p className="text-lg text-slate-200">{PRIVATE_GATE_TEXT[gate]}</p>
+      <main className="mx-auto max-w-xl px-4 py-16 text-center">
+        <p className="text-base text-lobby-ink">{PRIVATE_GATE_TEXT[gate]}</p>
       </main>
     )
   }
 
   if (conversationId) {
+    const name = codename(conversationId, chat.peer?.memberId ?? 0)
     return (
-      <main className="mx-auto max-w-2xl px-4 py-4 flex flex-col h-[calc(100vh-56px)]">
-        {info?.burnAfterRead && (
-          <p className="text-xs text-amber-400 bg-amber-950/40 rounded px-3 py-2 mb-2">
-            消息在对方阅读 10 秒后从双方界面消失；对方仍可截屏；服务器最多保留 7 天用于安全审计。
-          </p>
-        )}
-        <div className="flex justify-end pb-2 border-b border-slate-800">
-          <button type="button" className="px-3 py-1 rounded bg-red-800 text-sm" onClick={() => setConfirmDestroy(true)}>
-            销毁会话
-          </button>
-        </div>
-        <MessageList messages={chat.messages} selfMemberId={chat.myMemberId} />
-        <Composer onSend={chat.send} />
+      <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
+        <GlassPanel className="h-full rounded-none md:rounded-panel">
+          <header className="flex items-center justify-between gap-2 border-b border-glass-line px-4 py-3">
+            <span className="text-sm font-medium text-night-ink">{name}</span>
+            <button
+              type="button"
+              className="rounded-sm px-2 py-1 text-xs text-danger transition duration-150 ease-out hover:bg-glass"
+              onClick={() => setConfirmDestroy(true)}
+            >
+              销毁会话
+            </button>
+          </header>
+          {info?.burnAfterRead && (
+            <p className="mx-4 mt-3 rounded-sm bg-brand/15 px-3 py-2 text-[11px] text-night-ink">
+              消息在对方阅读 10 秒后从双方界面消失；对方仍可截屏；服务器最多保留 7 天用于安全审计。
+            </p>
+          )}
+          <MessageList
+            messages={chat.messages}
+            selfMemberId={chat.myMemberId}
+            conversationId={conversationId}
+            anonMode
+            typing={chat.typing}
+          />
+          <Composer onSend={chat.send} onTyping={chat.sendTyping} />
+        </GlassPanel>
         {confirmDestroy && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" role="dialog" aria-label="销毁确认">
-            <div className="bg-slate-900 rounded-lg p-4 w-full max-w-sm">
-              <p className="mb-4 text-slate-200">销毁后双方都无法再查看，确定销毁吗？</p>
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            role="dialog"
+            aria-label="销毁确认"
+          >
+            <div className="w-full max-w-sm rounded-panel bg-lobby-card p-5 shadow-soft">
+              <p className="mb-4 text-sm text-lobby-ink">销毁后双方都无法再查看，确定销毁吗？</p>
               <div className="flex justify-end gap-2">
-                <button type="button" className="px-3 py-1 rounded bg-slate-700" onClick={() => setConfirmDestroy(false)}>
+                <button
+                  type="button"
+                  className="rounded-sm px-3 py-1.5 text-sm text-lobby-sub transition duration-150 ease-out hover:bg-lobby-bg"
+                  onClick={() => setConfirmDestroy(false)}
+                >
                   取消
                 </button>
-                <button type="button" className="px-3 py-1 rounded bg-red-600" onClick={doDestroy}>
+                <button
+                  type="button"
+                  className="rounded-sm bg-danger px-3 py-1.5 text-sm text-white transition duration-150 ease-out"
+                  onClick={doDestroy}
+                >
                   确认销毁
                 </button>
               </div>
@@ -130,18 +180,30 @@ export default function PrivateJoinPage() {
 
   // 需要密码或正在加入
   return (
-    <main className="mx-auto max-w-xl px-4 py-10 space-y-4">
-      <h1 className="text-2xl font-bold">私密聊天</h1>
-      {gate === 'password' && (
-        <>
-          <p className="text-slate-400">该链接需要访问密码。</p>
-          <input aria-label="访问密码" type="password" className="w-full bg-slate-800 rounded px-3 py-2" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <button type="button" className="px-4 py-2 rounded bg-indigo-600 text-white" onClick={join}>
-            加入
-          </button>
-        </>
-      )}
-      {gate === null && <p className="text-slate-400">加载中…</p>}
+    <main className="mx-auto max-w-xl px-4 py-16">
+      <h1 className="mb-6 text-2xl font-bold tracking-tight text-lobby-ink">私密聊天</h1>
+      <Card className="space-y-4 p-6">
+        {gate === 'password' && (
+          <>
+            <p className="text-sm text-lobby-sub">该链接需要访问密码。</p>
+            <input
+              aria-label="访问密码"
+              type="password"
+              className="w-full rounded-sm border border-lobby-line bg-lobby-bg px-3 py-2 text-sm text-lobby-ink"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <button
+              type="button"
+              className="rounded-sm bg-brand px-5 py-2 text-sm text-white transition duration-150 ease-out"
+              onClick={join}
+            >
+              加入
+            </button>
+          </>
+        )}
+        {gate === null && <p className="text-sm text-lobby-sub">加载中…</p>}
+      </Card>
     </main>
   )
 }

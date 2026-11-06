@@ -1,5 +1,8 @@
 import { useEffect, useRef } from 'react'
-import { Avatar } from './Avatar'
+import { GradientAvatar } from './GradientAvatar'
+import { Bubble } from './Bubble'
+import { TypingDots } from './TypingDots'
+import { codename } from '../lib/codename'
 
 export type MessageState = 'sending' | 'sent' | 'failed'
 
@@ -22,10 +25,28 @@ interface MessageListProps {
   onRetry?: (id: number) => void
   onReachTop?: () => void
   typing?: boolean
+  /** 会话 ID：1v1 场景用它计算匿名代号。 */
+  conversationId?: string | null
+  /**
+   * 是否用匿名代号替代昵称（match / bottle / private 为 true；房间为 false；
+   * 故事会话由服务端下发角色名，保持 false）。
+   */
+  anonMode?: boolean
 }
 
-/** 消息列表：自己靠右、纯文本渲染、发送状态、上翻加载、焚毁倒计时、正在输入提示。 */
-export function MessageList({ messages, selfMemberId, onRetry, onReachTop, typing }: MessageListProps) {
+/**
+ * 消息列表：自己靠右、纯文本渲染、发送状态、上翻加载、焚毁倒计时、正在输入提示。
+ * 1v1 场景不显示昵称，改为显示匿名代号；自己在 1v1 场景显示为「我」。
+ */
+export function MessageList({
+  messages,
+  selfMemberId,
+  onRetry,
+  onReachTop,
+  typing,
+  conversationId,
+  anonMode,
+}: MessageListProps) {
   const ref = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const prevCount = useRef(0)
@@ -46,12 +67,18 @@ export function MessageList({ messages, selfMemberId, onRetry, onReachTop, typin
     if (el.scrollTop < 30) onReachTop?.()
   }
 
+  function label(m: DisplayMessage, self: boolean): string {
+    if (!anonMode) return m.nickname
+    if (self) return '我'
+    return codename(conversationId ?? '', m.memberId)
+  }
+
   return (
     <div
       ref={ref}
       onScroll={handleScroll}
       data-testid="message-list"
-      className="flex-1 overflow-y-auto px-4 py-3 space-y-2"
+      className="flex-1 space-y-3 overflow-y-auto px-4 py-4"
     >
       {messages.map((m) => {
         const self = m.memberId === selfMemberId
@@ -59,27 +86,27 @@ export function MessageList({ messages, selfMemberId, onRetry, onReachTop, typin
           <div
             key={m.id}
             data-self={self ? 'true' : 'false'}
-            className={`flex gap-2 items-end ${self ? 'flex-row-reverse ml-auto' : ''}`}
+            className={`flex items-end gap-2 ${self ? 'ml-auto flex-row-reverse' : ''}`}
           >
-            <Avatar seed={m.avatarSeed} size={28} />
-            <div className={`max-w-[75%] ${self ? 'items-end text-right' : ''}`}>
-              {!self && <div className="text-xs text-slate-500 mb-0.5">{m.nickname}</div>}
+            <GradientAvatar seed={m.avatarSeed || 'anonymous'} size={28} />
+            <div className={`flex max-w-[85%] flex-col gap-1 ${self ? 'items-end text-right' : ''}`}>
+              {!self && (
+                <span className="text-[11px] text-night-sub">{label(m, self)}</span>
+              )}
               {m.kind === 'system' ? (
-                <p className="text-xs text-slate-400 whitespace-pre-wrap">{m.body}</p>
+                <p className="whitespace-pre-wrap text-xs text-night-sub">{m.body}</p>
               ) : (
-                <p className="whitespace-pre-wrap break-words rounded-2xl px-3 py-2 bg-slate-800 text-slate-100">
-                  {m.body}
-                </p>
+                <Bubble self={self}>{m.body}</Bubble>
               )}
               {m.burnCountdown !== undefined && m.burnCountdown > 0 && (
-                <span className="text-xs text-amber-400">将在 {m.burnCountdown} 秒后焚毁</span>
+                <span className="text-[11px] text-brand">将在 {m.burnCountdown} 秒后焚毁</span>
               )}
-              {m.state === 'sending' && <span className="text-xs text-slate-400">发送中</span>}
+              {m.state === 'sending' && <span className="text-[11px] text-night-sub">发送中</span>}
               {m.state === 'failed' && (
                 <button
                   type="button"
                   onClick={() => onRetry?.(m.id)}
-                  className="text-xs text-red-400 underline"
+                  className="text-[11px] text-danger underline"
                 >
                   发送失败，点击重试
                 </button>
@@ -89,8 +116,8 @@ export function MessageList({ messages, selfMemberId, onRetry, onReachTop, typin
         )
       })}
       {typing && (
-        <div className="text-xs text-slate-400" data-testid="typing">
-          对方正在输入…
+        <div data-testid="typing">
+          <TypingDots />
         </div>
       )}
     </div>

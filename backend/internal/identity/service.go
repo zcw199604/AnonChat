@@ -101,17 +101,38 @@ func (s *Service) Create(ctx context.Context, ip, userAgent string) (*Session, e
 	if err != nil {
 		return nil, err
 	}
-	ident, err := s.q.CreateIdentity(ctx, store.CreateIdentityParams{
-		TokenHash:  HashToken(token),
-		Nickname:   GenerateNickname(),
-		AvatarSeed: GenerateAvatarSeed(),
-		CreatedIp:  parseIP(ip),
-	})
+	ident, err := s.createIdentityWithRetry(ctx, s.q, token, ip)
 	if err != nil {
 		return nil, err
 	}
 	s.writeAccessLog(ctx, ident.ID, eventIdentityCreated, ip, userAgent)
 	return &Session{Token: token, Identity: ident}, nil
+}
+
+// publicCodeRetries 是匿名编号唯一冲突时的最大重试次数（how.md 3.1）。
+const publicCodeRetries = 3
+
+// createIdentityWithRetry 生成匿名编号并插入身份，唯一冲突时重试。
+func (s *Service) createIdentityWithRetry(ctx context.Context, q *store.Queries, token, ip string) (store.Identity, error) {
+	var lastErr error
+	for attempt := 0; attempt < publicCodeRetries; attempt++ {
+		code, err := NewPublicCode()
+		if err != nil {
+			return store.Identity{}, err
+		}
+		ident, err := q.CreateIdentity(ctx, store.CreateIdentityParams{
+			TokenHash:  HashToken(token),
+			Nickname:   GenerateNickname(),
+			AvatarSeed: GenerateAvatarSeed(),
+			CreatedIp:  parseIP(ip),
+			PublicCode: code,
+		})
+		if err == nil {
+			return ident, nil
+		}
+		lastErr = err
+	}
+	return store.Identity{}, lastErr
 }
 
 // Resolve 用明文令牌查询身份；令牌无效或已吊销返回 ErrUnauthorized。
@@ -153,15 +174,21 @@ func (s *Service) Reset(ctx context.Context, current *store.Identity, ip, userAg
 	if err := q.RevokeIdentity(ctx, current.ID); err != nil {
 		return nil, err
 	}
-	ident, err := q.CreateIdentity(ctx, store.CreateIdentityParams{
-		TokenHash:  HashToken(token),
-		Nickname:   GenerateNickname(),
-		AvatarSeed: GenerateAvatarSeed(),
-		CreatedIp:  parseIP(ip),
-	})
+	// 换身份：VIP 到期时间与剩余广播卡转移到新身份（how.md 2.7 场景 7），
+	// 资料与匿名编号重新生成。
+	ident, err := s.createIdentityWithRetry(ctx, q, token, ip)
 	if err != nil {
 		return nil, err
 	}
+	if err := q.SetIdentityBenefits(ctx, store.SetIdentityBenefitsParams{
+		ID:       ident.ID,
+		VipUntil: current.VipUntil,
+		Cards:    current.BroadcastCards,
+	}); err != nil {
+		return nil, err
+	}
+	ident.VipUntil = current.VipUntil
+	ident.BroadcastCards = current.BroadcastCards
 	if err := q.InsertAccessLog(ctx, s.accessLogArg(ident.ID, eventIdentityReset, ip, userAgent)); err != nil {
 		return nil, err
 	}

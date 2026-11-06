@@ -71,3 +71,14 @@ WITH batch AS (
     SELECT r.id FROM reports r WHERE r.created_at < $1 LIMIT 5000
 )
 DELETE FROM reports WHERE id IN (SELECT id FROM batch);
+
+-- ---- 本包新增（how.md 3.1 留存规则）----
+
+-- name: DeleteExpiredBroadcasts :execrows
+WITH batch AS (
+    SELECT b.id FROM broadcasts b
+    WHERE (b.status = 'approved' AND b.show_until IS NOT NULL AND b.show_until < $1)
+       OR (b.status IN ('rejected', 'removed') AND b.reviewed_at IS NOT NULL AND b.reviewed_at < $1)
+    LIMIT 5000
+)
+DELETE FROM broadcasts WHERE id IN (SELECT id FROM batch);

@@ -19,6 +19,7 @@ const (
 	ConversationKindRoom    ConversationKind = "room"
 	ConversationKindBottle  ConversationKind = "bottle"
 	ConversationKindPrivate ConversationKind = "private"
+	ConversationKindStory   ConversationKind = "story"
 )
 
 func (e *ConversationKind) Scan(src interface{}) error {
@@ -65,6 +66,25 @@ type AccessLog struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type ActivationBatch struct {
+	ID             pgtype.UUID        `json:"id"`
+	Label          string             `json:"label"`
+	VipDays        int32              `json:"vip_days"`
+	BroadcastCards int32              `json:"broadcast_cards"`
+	CodeCount      int32              `json:"code_count"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	CreatedBy      pgtype.UUID        `json:"created_by"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type ActivationCode struct {
+	CodeHash   []byte             `json:"code_hash"`
+	BatchID    pgtype.UUID        `json:"batch_id"`
+	RedeemedBy pgtype.UUID        `json:"redeemed_by"`
+	RedeemedAt pgtype.Timestamptz `json:"redeemed_at"`
+	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
+}
+
 type AdminAuditLog struct {
 	ID        int64              `json:"id"`
 	AdminID   pgtype.UUID        `json:"admin_id"`
@@ -87,6 +107,16 @@ type AdminUser struct {
 	PasswordHash  string             `json:"password_hash"`
 	TotpSecretEnc []byte             `json:"totp_secret_enc"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type Announcement struct {
+	ID        pgtype.UUID        `json:"id"`
+	Content   string             `json:"content"`
+	StartsAt  pgtype.Timestamptz `json:"starts_at"`
+	EndsAt    pgtype.Timestamptz `json:"ends_at"`
+	CreatedBy pgtype.UUID        `json:"created_by"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type Ban struct {
@@ -124,6 +154,18 @@ type BottlePick struct {
 	PickedAt         pgtype.Timestamptz `json:"picked_at"`
 }
 
+type Broadcast struct {
+	ID           pgtype.UUID        `json:"id"`
+	IdentityID   pgtype.UUID        `json:"identity_id"`
+	Content      string             `json:"content"`
+	Status       string             `json:"status"`
+	ReviewedBy   pgtype.UUID        `json:"reviewed_by"`
+	ReviewedAt   pgtype.Timestamptz `json:"reviewed_at"`
+	RejectReason *string            `json:"reject_reason"`
+	ShowUntil    pgtype.Timestamptz `json:"show_until"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
 type Conversation struct {
 	ID            pgtype.UUID        `json:"id"`
 	Kind          ConversationKind   `json:"kind"`
@@ -145,15 +187,26 @@ type ConversationMember struct {
 }
 
 type Identity struct {
-	ID         pgtype.UUID        `json:"id"`
-	TokenHash  []byte             `json:"token_hash"`
-	Nickname   string             `json:"nickname"`
-	AvatarSeed string             `json:"avatar_seed"`
-	AccountID  pgtype.UUID        `json:"account_id"`
-	CreatedIp  *netip.Addr        `json:"created_ip"`
-	RevokedAt  pgtype.Timestamptz `json:"revoked_at"`
-	CreatedAt  pgtype.Timestamptz `json:"created_at"`
-	LastSeenAt pgtype.Timestamptz `json:"last_seen_at"`
+	ID                pgtype.UUID        `json:"id"`
+	TokenHash         []byte             `json:"token_hash"`
+	Nickname          string             `json:"nickname"`
+	AvatarSeed        string             `json:"avatar_seed"`
+	AccountID         pgtype.UUID        `json:"account_id"`
+	CreatedIp         *netip.Addr        `json:"created_ip"`
+	RevokedAt         pgtype.Timestamptz `json:"revoked_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	LastSeenAt        pgtype.Timestamptz `json:"last_seen_at"`
+	PublicCode        string             `json:"public_code"`
+	Gender            string             `json:"gender"`
+	Age               *int16             `json:"age"`
+	Province          *string            `json:"province"`
+	ProvincePublic    bool               `json:"province_public"`
+	Tags              []string           `json:"tags"`
+	CleanMode         bool               `json:"clean_mode"`
+	MatchGender       string             `json:"match_gender"`
+	MatchSameProvince bool               `json:"match_same_province"`
+	VipUntil          pgtype.Timestamptz `json:"vip_until"`
+	BroadcastCards    int32              `json:"broadcast_cards"`
 }
 
 type Message struct {
@@ -193,6 +246,8 @@ type Report struct {
 	HandledBy          pgtype.UUID        `json:"handled_by"`
 	HandledAt          pgtype.Timestamptz `json:"handled_at"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	TargetType         string             `json:"target_type"`
+	TargetID           *string            `json:"target_id"`
 }
 
 type Room struct {
@@ -211,6 +266,7 @@ type Room struct {
 	LastMessageAt   pgtype.Timestamptz `json:"last_message_at"`
 	ArchivedAt      pgtype.Timestamptz `json:"archived_at"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	Emoji           string             `json:"emoji"`
 }
 
 type SmsCode struct {
@@ -220,6 +276,50 @@ type SmsCode struct {
 	Attempts   int32              `json:"attempts"`
 	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 	ConsumedAt pgtype.Timestamptz `json:"consumed_at"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+type Story struct {
+	ID              pgtype.UUID        `json:"id"`
+	HostIdentityID  pgtype.UUID        `json:"host_identity_id"`
+	Title           string             `json:"title"`
+	Opening         string             `json:"opening"`
+	Tags            []string           `json:"tags"`
+	RoleA           string             `json:"role_a"`
+	RoleB           string             `json:"role_b"`
+	HostRole        string             `json:"host_role"`
+	Status          string             `json:"status"`
+	ConversationID  pgtype.UUID        `json:"conversation_id"`
+	GuestIdentityID pgtype.UUID        `json:"guest_identity_id"`
+	ActiveAt        pgtype.Timestamptz `json:"active_at"`
+	EndedAt         pgtype.Timestamptz `json:"ended_at"`
+	Valid           *bool              `json:"valid"`
+	HostConsent     bool               `json:"host_consent"`
+	GuestConsent    bool               `json:"guest_consent"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+}
+
+type StoryWork struct {
+	ID           pgtype.UUID        `json:"id"`
+	StoryID      pgtype.UUID        `json:"story_id"`
+	Title        string             `json:"title"`
+	Opening      string             `json:"opening"`
+	Tags         []string           `json:"tags"`
+	RoleA        string             `json:"role_a"`
+	RoleB        string             `json:"role_b"`
+	Lines        []byte             `json:"lines"`
+	Status       string             `json:"status"`
+	LikeCount    int32              `json:"like_count"`
+	ReviewedBy   pgtype.UUID        `json:"reviewed_by"`
+	ReviewedAt   pgtype.Timestamptz `json:"reviewed_at"`
+	RejectReason *string            `json:"reject_reason"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type StoryWorkLike struct {
+	WorkID     pgtype.UUID        `json:"work_id"`
+	IdentityID pgtype.UUID        `json:"identity_id"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 

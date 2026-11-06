@@ -202,14 +202,14 @@ func TestBlockPeerEndsConversationAndMutualInvisibility(t *testing.T) {
 		t.Error("应存在 A 屏蔽 B 的记录")
 	}
 
-	// 双向不可见。
+	// 双向不可见：各自历史里只剩自己的消息；1v1 会话的 nickname 为空（how.md 3.6）。
 	namesA := historyNames(t, env.Server, tokA, conv.ID)
-	if len(namesA) != 1 || namesA[0] != "alice" {
-		t.Errorf("A 历史应只含自己的消息, 实际 %v", namesA)
+	if len(namesA) != 1 || namesA[0] != "" {
+		t.Errorf("A 历史应只含自己的 1 条消息且昵称为空, 实际 %v", namesA)
 	}
 	namesB := historyNames(t, env.Server, tokB, conv.ID)
-	if len(namesB) != 1 || namesB[0] != "bob" {
-		t.Errorf("B 历史应只含自己的消息, 实际 %v", namesB)
+	if len(namesB) != 1 || namesB[0] != "" {
+		t.Errorf("B 历史应只含自己的 1 条消息且昵称为空, 实际 %v", namesB)
 	}
 }
 

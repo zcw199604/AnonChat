@@ -15,14 +15,18 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/bottle"
 	"github.com/anonchat/anonchat/backend/internal/config"
 	"github.com/anonchat/anonchat/backend/internal/conversation"
+	"github.com/anonchat/anonchat/backend/internal/feed"
 	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/match"
 	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/privatechat"
+	"github.com/anonchat/anonchat/backend/internal/profile"
 	"github.com/anonchat/anonchat/backend/internal/realtime"
 	"github.com/anonchat/anonchat/backend/internal/room"
+	"github.com/anonchat/anonchat/backend/internal/story"
 	"github.com/anonchat/anonchat/backend/internal/verify"
+	"github.com/anonchat/anonchat/backend/internal/vip"
 )
 
 // Deps 汇总装配路由所需的依赖，便于生产与测试分别构造。
@@ -42,6 +46,11 @@ type Deps struct {
 	Bottle       *bottle.Service
 	Private      *privatechat.Service
 	Admin        *admin.Service
+	Profile      *profile.Handler
+	VIP          *vip.Handler
+	Feed         *feed.Handler
+	Story        *story.Handler
+	StoryService *story.Service
 }
 
 // Server 持有装配好的依赖。
@@ -119,6 +128,36 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 		admin.WithLoginLimiters(limits.AdminLogin.New(), limits.AdminLogin.New()))
 	adminSvc.SetResolver(resolver)
 
+	// 资料与匹配偏好。
+	profileSvc := profile.New(pool, logger,
+		profile.WithFilter(filter),
+		profile.WithNicknameLimiters(limits.NicknameShuffle.New(), limits.NicknameSet.New()),
+	)
+	profileHandler := profile.NewHandler(profileSvc, logger, cfg.VerificationMode)
+
+	// VIP 与激活码。
+	vipSvc := vip.New(pool, logger,
+		vip.WithLimiters(limits.VIPRedeemPerID.New(), limits.VIPRedeemPerIP.New()),
+		vip.WithAccessLogger(identitySvc),
+	)
+	vipHandler := vip.NewHandler(vipSvc, adminSvc, cfg.VerificationMode)
+
+	// 公告、广播、匿名动态与在线统计。
+	feedSvc := feed.New(pool, logger,
+		feed.WithFilter(filter),
+		feed.WithBroadcastLimiter(limits.BroadcastPost.New()),
+		feed.WithOnlineProvider(onlineProvider{hub: hub, match: matchSvc, room: roomSvc}),
+	)
+	feedHandler := feed.NewHandler(feedSvc, adminSvc)
+
+	// 故事书。
+	storySvc := story.New(pool, logger, convSvc, hub,
+		story.WithFilter(filter),
+		story.WithLimiter(limits.StoryCreate.New()),
+		story.WithMinDuration(cfg.StoryMinDuration),
+	)
+	storyHandler := story.NewHandler(storySvc, adminSvc)
+
 	// VERIFICATION_MODE=off 时不构造实名验证服务，也不注册 /api/verify/* 路由。
 	var verifyHandler *verify.Handler
 	if cfg.VerificationMode != "off" {
@@ -151,7 +190,38 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 		Bottle:       bottleSvc,
 		Private:      privateSvc,
 		Admin:        adminSvc,
+		Profile:      profileHandler,
+		VIP:          vipHandler,
+		Feed:         feedHandler,
+		Story:        storyHandler,
+		StoryService: storySvc,
 	}, nil
+}
+
+// onlineProvider 汇总在线人数、排队人数与房间在线数（供 feed 的统计接口使用）。
+type onlineProvider struct {
+	hub   realtime.ConnStats
+	match *match.Service
+	room  *room.Service
+}
+
+// Online 实现 feed.OnlineProvider。
+func (p onlineProvider) Online() (online, matching, inRooms int) {
+	if p.hub != nil {
+		online = p.hub.OnlineCount()
+	}
+	if p.match != nil {
+		matching = p.match.QueueLen()
+	}
+	return online, matching, p.RoomOnline()
+}
+
+// RoomOnline 实现 feed.OnlineProvider：遍历房间统计在线人数（开销较大，由 feed 缓存）。
+func (p onlineProvider) RoomOnline() int {
+	if p.room == nil {
+		return 0
+	}
+	return p.room.TotalOnline(context.Background())
 }
 
 // buildModerator 依据配置加载敏感词库（生产环境必须可加载）。
@@ -205,6 +275,13 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/identity/me", protected(http.HandlerFunc(s.deps.Identity.Me)))
 	mux.Handle("POST /api/identity/reset", protected(http.HandlerFunc(s.deps.Identity.Reset)))
 
+	// 资料与匹配偏好（需要身份）。
+	if s.deps.Profile != nil {
+		mux.Handle("PATCH /api/identity/profile", protected(http.HandlerFunc(s.deps.Profile.Update)))
+		mux.Handle("POST /api/identity/nickname/shuffle", protected(http.HandlerFunc(s.deps.Profile.Shuffle)))
+		mux.Handle("PUT /api/identity/nickname", protected(http.HandlerFunc(s.deps.Profile.SetNickname)))
+	}
+
 	// 实名验证路由（需要身份，但不要求已验证）。
 	if s.deps.Verify != nil {
 		mux.Handle("POST /api/verify/sms/send", protected(http.HandlerFunc(s.deps.Verify.Send)))
@@ -243,6 +320,42 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/private-links/{token}/destroy", chatProtected(http.HandlerFunc(s.deps.Private.DestroyHandler)))
 	}
 
+	// VIP 与激活码。
+	if s.deps.VIP != nil {
+		mux.Handle("POST /api/vip/redeem", protected(http.HandlerFunc(s.deps.VIP.Redeem)))
+	}
+
+	// 统计、公告、广播与匿名动态。
+	if s.deps.Feed != nil {
+		mux.Handle("GET /api/stats/online", protected(http.HandlerFunc(s.deps.Feed.Stats)))
+		mux.Handle("GET /api/announcements", protected(http.HandlerFunc(s.deps.Feed.Announcements)))
+		mux.Handle("GET /api/broadcasts/current", protected(http.HandlerFunc(s.deps.Feed.CurrentBroadcasts)))
+		// 发布公开内容属于 UGC，与 V1 的漂流瓶一致挂 chatProtected：required 模式下要求已实名（审查意见 R3）。
+	mux.Handle("POST /api/broadcasts", chatProtected(http.HandlerFunc(s.deps.Feed.SubmitBroadcast)))
+		mux.Handle("GET /api/broadcasts/mine", protected(http.HandlerFunc(s.deps.Feed.MyBroadcasts)))
+		mux.Handle("POST /api/broadcasts/{id}/report", protected(http.HandlerFunc(s.deps.Feed.ReportBroadcast)))
+		mux.Handle("GET /api/feed", protected(http.HandlerFunc(s.deps.Feed.Timeline)))
+	}
+
+	// 故事书与作品。
+	if s.deps.Story != nil {
+		mux.Handle("GET /api/stories", protected(http.HandlerFunc(s.deps.Story.ListStories)))
+		// 发起故事属于公开 UGC，同样挂 chatProtected（审查意见 R3）。
+	mux.Handle("POST /api/stories", chatProtected(http.HandlerFunc(s.deps.Story.CreateStory)))
+		mux.Handle("GET /api/stories/{id}", protected(http.HandlerFunc(s.deps.Story.GetStory)))
+		mux.Handle("POST /api/stories/{id}/join", chatProtected(http.HandlerFunc(s.deps.Story.JoinStory)))
+		mux.Handle("POST /api/stories/{id}/end", chatProtected(http.HandlerFunc(s.deps.Story.EndStory)))
+		mux.Handle("DELETE /api/stories/{id}", protected(http.HandlerFunc(s.deps.Story.CancelStory)))
+		mux.Handle("POST /api/stories/{id}/consent", protected(http.HandlerFunc(s.deps.Story.ConsentStory)))
+		mux.Handle("GET /api/works", protected(http.HandlerFunc(s.deps.Story.ListWorks)))
+		mux.Handle("GET /api/works/{id}", protected(http.HandlerFunc(s.deps.Story.GetWork)))
+		mux.Handle("POST /api/works/{id}/like", protected(http.HandlerFunc(s.deps.Story.LikeWork)))
+		mux.Handle("DELETE /api/works/{id}/like", protected(http.HandlerFunc(s.deps.Story.UnlikeWork)))
+		mux.Handle("DELETE /api/works/{id}", protected(http.HandlerFunc(s.deps.Story.DeleteWork)))
+		mux.Handle("POST /api/works/{id}/withdraw", protected(http.HandlerFunc(s.deps.Story.WithdrawWork)))
+		mux.Handle("POST /api/works/{id}/report", protected(http.HandlerFunc(s.deps.Story.ReportWork)))
+	}
+
 	// 举报。
 	if s.deps.Report != nil {
 		mux.Handle("POST /api/reports", protected(http.HandlerFunc(s.handleReport)))
@@ -277,6 +390,29 @@ func (s *Server) adminHandler() http.Handler {
 	am.Handle("DELETE /api/admin/bans/{id}", a.RequireAdmin(http.HandlerFunc(a.RevokeBanHandler)))
 	am.Handle("GET /api/admin/stats", a.RequireAdmin(http.HandlerFunc(a.StatsHandler)))
 	am.Handle("GET /api/admin/audit-logs", a.RequireAdmin(http.HandlerFunc(a.AuditLogsHandler)))
+	am.Handle("GET /api/admin/identities/by-code/{code}", a.RequireAdmin(http.HandlerFunc(a.LookupIdentityByCodeHandler)))
+
+	// 公告、广播审核、激活码批次、作品审核。
+	if s.deps.Feed != nil {
+		am.Handle("GET /api/admin/announcements", a.RequireAdmin(http.HandlerFunc(s.deps.Feed.AdminListAnnouncements)))
+		am.Handle("POST /api/admin/announcements", a.RequireAdmin(http.HandlerFunc(s.deps.Feed.AdminCreateAnnouncement)))
+		am.Handle("DELETE /api/admin/announcements/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.Feed.AdminDeleteAnnouncement)))
+		am.Handle("GET /api/admin/broadcasts", a.RequireAdmin(http.HandlerFunc(s.deps.Feed.AdminListBroadcasts)))
+		am.Handle("POST /api/admin/broadcasts/{id}/approve", a.RequireAdmin(http.HandlerFunc(s.deps.Feed.AdminApproveBroadcast)))
+		am.Handle("POST /api/admin/broadcasts/{id}/reject", a.RequireAdmin(http.HandlerFunc(s.deps.Feed.AdminRejectBroadcast)))
+		am.Handle("POST /api/admin/broadcasts/{id}/remove", a.RequireAdmin(http.HandlerFunc(s.deps.Feed.AdminRemoveBroadcast)))
+	}
+	if s.deps.VIP != nil {
+		am.Handle("GET /api/admin/activation-batches", a.RequireAdmin(http.HandlerFunc(s.deps.VIP.ListBatches)))
+		am.Handle("POST /api/admin/activation-batches", a.RequireAdmin(http.HandlerFunc(s.deps.VIP.CreateBatch)))
+		am.Handle("POST /api/admin/activation-batches/{id}/revoke", a.RequireAdmin(http.HandlerFunc(s.deps.VIP.RevokeBatch)))
+	}
+	if s.deps.Story != nil {
+		am.Handle("GET /api/admin/works", a.RequireAdmin(http.HandlerFunc(s.deps.Story.AdminListWorks)))
+		am.Handle("POST /api/admin/works/{id}/approve", a.RequireAdmin(http.HandlerFunc(s.deps.Story.AdminApproveWork)))
+		am.Handle("POST /api/admin/works/{id}/reject", a.RequireAdmin(http.HandlerFunc(s.deps.Story.AdminRejectWork)))
+		am.Handle("POST /api/admin/works/{id}/remove", a.RequireAdmin(http.HandlerFunc(s.deps.Story.AdminRemoveWork)))
+	}
 
 	var prefixes []netip.Prefix
 	for _, c := range s.deps.Cfg.AdminIPAllowlist {
@@ -308,6 +444,9 @@ func (s *Server) StartBackground(ctx context.Context) {
 	if s.deps.Private != nil {
 		go s.deps.Private.StartExpiry(ctx)
 	}
+	if s.deps.StoryService != nil {
+		go runStoryExpiry(ctx, s.deps.StoryService, s.deps.Logger)
+	}
 }
 
 // handleHealthz 是存活检查，只要进程在运行就返回 200。
@@ -324,4 +463,22 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+// runStoryExpiry 每分钟把等待超时的故事置为 expired（how.md 3.1 留存规则）。
+func runStoryExpiry(ctx context.Context, svc *story.Service, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if n, err := svc.ExpireWaiting(ctx); err != nil {
+				logger.Warn("故事过期清理失败", "error", err)
+			} else if n > 0 {
+				logger.Info("故事过期清理", "rows", n)
+			}
+		}
+	}
 }

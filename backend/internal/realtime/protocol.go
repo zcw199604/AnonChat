@@ -41,6 +41,10 @@ const (
 	TypeMsgBurned    MessageType = "msg.burned"
 	TypeBottleReply  MessageType = "bottle.reply"
 	TypeKicked       MessageType = "kicked"
+	// 故事书（how.md 3.6）。
+	TypeStoryStarted MessageType = "story.started"
+	TypeStoryEnded   MessageType = "story.ended"
+	TypeStoryConsent MessageType = "story.consent"
 )
 
 // ErrorCode 是 WS 协议与 REST 共用的错误码（"d.code" 字段）。

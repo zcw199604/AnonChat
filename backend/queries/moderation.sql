@@ -48,3 +48,8 @@ JOIN identities i ON i.id = m.sender_identity_id
 WHERE m.conversation_id = $1 AND m.id > $2
 ORDER BY m.id ASC
 LIMIT 10;
+
+-- name: InsertTypedReport :one
+INSERT INTO reports (reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, target_type, target_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id;

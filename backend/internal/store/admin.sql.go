@@ -203,7 +203,7 @@ func (q *Queries) GetLastWSConnectIP(ctx context.Context, identityID pgtype.UUID
 }
 
 const getReportByID = `-- name: GetReportByID :one
-SELECT id, reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, status, handled_by, handled_at, created_at
+SELECT id, reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, status, handled_by, handled_at, created_at, target_type, target_id
 FROM reports
 WHERE id = $1
 `
@@ -223,6 +223,8 @@ func (q *Queries) GetReportByID(ctx context.Context, id pgtype.UUID) (Report, er
 		&i.HandledBy,
 		&i.HandledAt,
 		&i.CreatedAt,
+		&i.TargetType,
+		&i.TargetID,
 	)
 	return i, err
 }
@@ -415,7 +417,7 @@ func (q *Queries) ListBans(ctx context.Context, arg ListBansParams) ([]Ban, erro
 
 const listReports = `-- name: ListReports :many
 
-SELECT id, reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, status, handled_by, handled_at, created_at
+SELECT id, reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, status, handled_by, handled_at, created_at, target_type, target_id
 FROM reports
 WHERE ($1::text IS NULL OR status = $1::text)
   AND (
@@ -461,6 +463,8 @@ func (q *Queries) ListReports(ctx context.Context, arg ListReportsParams) ([]Rep
 			&i.HandledBy,
 			&i.HandledAt,
 			&i.CreatedAt,
+			&i.TargetType,
+			&i.TargetID,
 		); err != nil {
 			return nil, err
 		}

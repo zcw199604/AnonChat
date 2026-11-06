@@ -59,8 +59,34 @@ export interface IdentityInfo {
   verified: boolean
 }
 
+export type Gender = 'male' | 'female' | 'secret'
+
+export interface ProfileInfo {
+  gender: Gender
+  age: number | null
+  province: string | null
+  provincePublic: boolean
+  tags: string[]
+  cleanMode: boolean
+}
+
+export interface MatchPrefs {
+  gender: 'any' | 'male' | 'female'
+  sameProvince: boolean
+}
+
+export interface VipInfo {
+  active: boolean
+  until: string | null
+}
+
 export interface MeInfo extends IdentityInfo {
   verificationMode: 'off' | 'optional' | 'required'
+  publicCode: string
+  profile: ProfileInfo
+  matchPrefs: MatchPrefs
+  vip: VipInfo
+  broadcastCards: number
 }
 
 export function postIdentity(): Promise<IdentityInfo> {
@@ -75,6 +101,93 @@ export function resetIdentity(): Promise<IdentityInfo> {
   return apiRequest<IdentityInfo>('POST', '/api/identity/reset')
 }
 
+/** 部分更新资料与匹配偏好（how.md 3.5 PATCH /api/identity/profile）。 */
+export interface ProfilePatch {
+  gender?: Gender
+  age?: number | null
+  province?: string | null
+  provincePublic?: boolean
+  tags?: string[]
+  cleanMode?: boolean
+  matchPrefs?: Partial<MatchPrefs>
+}
+
+export function patchProfile(patch: ProfilePatch): Promise<MeInfo> {
+  return apiRequest<MeInfo>('PATCH', '/api/identity/profile', patch)
+}
+
+/** 随机昵称。 */
+export function shuffleNickname(): Promise<MeInfo> {
+  return apiRequest<MeInfo>('POST', '/api/identity/nickname/shuffle')
+}
+
+/** 自定义昵称（2–12 字，服务端做违禁词检查）。 */
+export function setNickname(nickname: string): Promise<MeInfo> {
+  return apiRequest<MeInfo>('PUT', '/api/identity/nickname', { nickname })
+}
+
+// ---- VIP 与广播卡 ----
+
+export function redeemVip(code: string): Promise<MeInfo> {
+  return apiRequest<MeInfo>('POST', '/api/vip/redeem', { code })
+}
+
+// ---- 统计 / 公告 / 广播 / 动态 ----
+
+export interface OnlineStats {
+  online: number
+  matching: number
+  inRooms: number
+}
+
+export function onlineStats(): Promise<OnlineStats> {
+  return apiRequest<OnlineStats>('GET', '/api/stats/online')
+}
+
+export interface Announcement {
+  id: string
+  content: string
+  createdAt: string
+}
+
+export function listAnnouncements(): Promise<Announcement[]> {
+  return apiRequest<Announcement[]>('GET', '/api/announcements')
+}
+
+export type BroadcastStatus = 'pending' | 'approved' | 'rejected' | 'removed'
+
+export interface Broadcast {
+  id: string
+  content: string
+  status: BroadcastStatus
+  rejectReason?: string | null
+  showUntil?: string | null
+  createdAt: string
+}
+
+export function currentBroadcasts(): Promise<Broadcast[]> {
+  return apiRequest<Broadcast[]>('GET', '/api/broadcasts/current')
+}
+
+export function postBroadcast(content: string): Promise<{ id: string }> {
+  return apiRequest<{ id: string }>('POST', '/api/broadcasts', { content })
+}
+
+export function myBroadcasts(): Promise<Broadcast[]> {
+  return apiRequest<Broadcast[]>('GET', '/api/broadcasts/mine')
+}
+
+export interface FeedItem {
+  type: 'announcement' | 'broadcast' | 'work'
+  id: string
+  text: string
+  at: string
+}
+
+export function getFeed(): Promise<FeedItem[]> {
+  return apiRequest<FeedItem[]>('GET', '/api/feed')
+}
+
 // ---- 房间 ----
 
 export interface RoomInfo {
@@ -82,6 +195,7 @@ export interface RoomInfo {
   slug: string
   name: string
   description: string
+  emoji: string
   online: number
   maxMembers: number
 }
@@ -373,4 +487,256 @@ export interface ConversationDetail {
 
 export function getConversation(id: string): Promise<ConversationDetail> {
   return apiRequest<ConversationDetail>('GET', `/api/conversations/${id}`)
+}
+
+// ---- 故事书 ----
+
+export interface WaitingStory {
+  id: string
+  title: string
+  opening: string
+  tags: string[]
+  roleA: string
+  roleB: string
+  openRole: string
+  expiresAt: string
+  createdAt: string
+}
+
+export interface StoryDetail {
+  id: string
+  title: string
+  opening: string
+  tags: string[]
+  roleA: string
+  roleB: string
+  hostRole: 'a' | 'b'
+  status: 'waiting' | 'active' | 'ended' | 'expired' | 'removed'
+  valid: boolean | null
+  hostConsent: boolean
+  guestConsent: boolean
+  conversationId?: string | null
+  myRole: 'host' | 'guest' | null
+  expiresAt: string
+  createdAt: string
+}
+
+export function listWaitingStories(before?: string): Promise<WaitingStory[]> {
+  const q = before ? `?status=waiting&before=${encodeURIComponent(before)}` : '?status=waiting'
+  return apiRequest<WaitingStory[]>('GET', `/api/stories${q}`)
+}
+
+export function createStory(body: {
+  title: string
+  opening: string
+  tags: string[]
+  roleA: string
+  roleB: string
+  hostRole: 'a' | 'b'
+}): Promise<StoryDetail> {
+  return apiRequest<StoryDetail>('POST', '/api/stories', body)
+}
+
+export function getStory(id: string): Promise<StoryDetail> {
+  return apiRequest<StoryDetail>('GET', `/api/stories/${id}`)
+}
+
+export function joinStory(id: string): Promise<{ conversationId: string }> {
+  return apiRequest<{ conversationId: string }>('POST', `/api/stories/${id}/join`)
+}
+
+export function endStory(id: string): Promise<StoryDetail> {
+  return apiRequest<StoryDetail>('POST', `/api/stories/${id}/end`)
+}
+
+export function cancelStory(id: string): Promise<void> {
+  return apiRequest<void>('DELETE', `/api/stories/${id}`)
+}
+
+export function consentStory(id: string, agree: boolean): Promise<StoryDetail> {
+  return apiRequest<StoryDetail>('POST', `/api/stories/${id}/consent`, { agree })
+}
+
+export interface WorkListItem {
+  id: string
+  title: string
+  opening: string
+  roleA: string
+  roleB: string
+  tags: string[]
+  likeCount: number
+  at: string
+}
+
+export interface WorkLine {
+  role: string
+  text: string
+  ts: number
+}
+
+export interface WorkDetail {
+  id: string
+  title: string
+  opening: string
+  tags: string[]
+  roleA: string
+  roleB: string
+  lines: WorkLine[]
+  status: 'pending' | 'approved' | 'rejected' | 'removed'
+  likeCount: number
+  liked: boolean
+  mine: 'host' | 'guest' | null
+  createdAt: string
+}
+
+export function listWorks(before?: string): Promise<WorkListItem[]> {
+  const q = before ? `?before=${encodeURIComponent(before)}` : ''
+  return apiRequest<WorkListItem[]>('GET', `/api/works${q}`)
+}
+
+export function getWork(id: string): Promise<WorkDetail> {
+  return apiRequest<WorkDetail>('GET', `/api/works/${id}`)
+}
+
+export function likeWork(id: string): Promise<{ likeCount: number }> {
+  return apiRequest<{ likeCount: number }>('POST', `/api/works/${id}/like`)
+}
+
+export function unlikeWork(id: string): Promise<{ likeCount: number }> {
+  return apiRequest<{ likeCount: number }>('DELETE', `/api/works/${id}/like`)
+}
+
+export function deleteWork(id: string): Promise<void> {
+  return apiRequest<void>('DELETE', `/api/works/${id}`)
+}
+
+export function withdrawWork(id: string): Promise<void> {
+  return apiRequest<void>('POST', `/api/works/${id}/withdraw`)
+}
+
+export function reportWork(id: string, req: { reason: string; note?: string }): Promise<{ id: string }> {
+  return apiRequest<{ id: string }>('POST', `/api/works/${id}/report`, req)
+}
+
+// ---- 管理后台：公告 / 广播 / 激活码 / 作品 / 身份 ----
+
+export interface AdminAnnouncement {
+  id: string
+  content: string
+  createdAt: string
+  expiresAt?: string
+}
+
+export function adminAnnouncements(): Promise<{ announcements: AdminAnnouncement[] }> {
+  return apiRequest('GET', '/api/admin/announcements')
+}
+
+export function adminCreateAnnouncement(req: {
+  content: string
+  expiresAt?: string | null
+}): Promise<AdminAnnouncement> {
+  return apiRequest('POST', '/api/admin/announcements', req)
+}
+
+export function adminDeleteAnnouncement(id: string): Promise<void> {
+  return apiRequest<void>('DELETE', `/api/admin/announcements/${id}`)
+}
+
+export interface AdminBroadcast extends Broadcast {
+  publicCode: string
+}
+
+export function adminBroadcasts(status = 'pending'): Promise<{ broadcasts: AdminBroadcast[] }> {
+  return apiRequest('GET', `/api/admin/broadcasts?status=${encodeURIComponent(status)}`)
+}
+
+export function adminApproveBroadcast(id: string): Promise<void> {
+  return apiRequest<void>('POST', `/api/admin/broadcasts/${id}/approve`)
+}
+
+export function adminRejectBroadcast(id: string, reason: string): Promise<void> {
+  return apiRequest<void>('POST', `/api/admin/broadcasts/${id}/reject`, { reason })
+}
+
+export function adminRemoveBroadcast(id: string): Promise<void> {
+  return apiRequest<void>('POST', `/api/admin/broadcasts/${id}/remove`)
+}
+
+export interface ActivationBatch {
+  id: string
+  label: string
+  vipDays: number
+  broadcastCards: number
+  codeCount: number
+  expiresAt: string
+  createdAt: string
+  total: number
+  redeemed: number
+  revoked: number
+}
+
+export function adminActivationBatches(): Promise<{ batches: ActivationBatch[] }> {
+  return apiRequest('GET', '/api/admin/activation-batches')
+}
+
+export function adminCreateActivationBatch(req: {
+  label: string
+  vipDays: number
+  broadcastCards: number
+  count: number
+  expiresAt: string
+}): Promise<{ batch: ActivationBatch; codes: string[] }> {
+  return apiRequest('POST', '/api/admin/activation-batches', req)
+}
+
+export function adminRevokeActivationBatch(id: string): Promise<{ revoked: number }> {
+  return apiRequest('POST', `/api/admin/activation-batches/${id}/revoke`)
+}
+
+export interface AdminWork {
+  id: string
+  title: string
+  status: string
+  likeCount: number
+  rejectReason?: string | null
+  createdAt: string
+}
+
+export function adminWorks(status = 'pending'): Promise<{ works: AdminWork[] }> {
+  return apiRequest('GET', `/api/admin/works?status=${encodeURIComponent(status)}`)
+}
+
+export function adminApproveWork(id: string): Promise<void> {
+  return apiRequest<void>('POST', `/api/admin/works/${id}/approve`)
+}
+
+export function adminRejectWork(id: string, reason: string): Promise<void> {
+  return apiRequest<void>('POST', `/api/admin/works/${id}/reject`, { reason })
+}
+
+export function adminRemoveWork(id: string): Promise<void> {
+  return apiRequest<void>('POST', `/api/admin/works/${id}/remove`)
+}
+
+export interface AdminIdentityLookup {
+  identityId: string
+  publicCode: string
+  createdAt: string
+  vipActive: boolean
+  banned: boolean
+  summary: {
+    nickname: string
+    createdIp: string
+    lastIp: string
+    phoneMasked: string
+    reportCount: number
+  }
+}
+
+export function adminLookupIdentity(code: string): Promise<AdminIdentityLookup> {
+  return apiRequest<AdminIdentityLookup>('GET', `/api/admin/identities/by-code/${encodeURIComponent(code)}`)
+}
+
+export function adminBroadcastReport(id: string, req: { reason: string; note?: string }): Promise<{ id: string }> {
+  return apiRequest<{ id: string }>('POST', `/api/broadcasts/${id}/report`, req)
 }

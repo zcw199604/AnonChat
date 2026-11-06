@@ -24,6 +24,7 @@ type roomListItem struct {
 	Slug        string `json:"slug"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Emoji       string `json:"emoji"`
 	Online      int    `json:"online"`
 	MaxMembers  int    `json:"maxMembers"`
 }
@@ -53,6 +54,7 @@ func (s *Service) ListRoomsHandler(w http.ResponseWriter, r *http.Request) {
 			Slug:        row.Slug,
 			Name:        row.Name,
 			Description: row.Description,
+			Emoji:       row.Emoji,
 			Online:      s.hub.Count(presenceKey(row.ID)),
 			MaxMembers:  int(row.MaxMembers),
 		})

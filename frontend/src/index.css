@@ -1,1 +1,108 @@
 @import 'tailwindcss';
+
+/*
+ * 设计 token（how.md 1.1）。强调色只有两个：品牌紫 #8B7CF6 与辅助粉 #E88BC4；
+ * 错误色 #E5484D 只用于错误提示，不计入强调色。阴影只有 --shadow-soft 一种。
+ *
+ * 大厅类 token 通过一层 CSS 变量间接取值：浅色主题下是 how.md 表中的值，
+ * html[data-theme='dark'] 时切换为聊天页的夜间 token（how.md 1.3「暗色大厅沿用聊天页的 token」）。
+ */
+:root {
+  --page: #f7f7fa;
+  --surface: #ffffff;
+  --surface-line: #ebebef;
+  --ink: #1c1c28;
+  --sub: #6e6e80;
+}
+
+html[data-theme='dark'] {
+  --page: #0f1117;
+  --surface: rgb(255 255 255 / 0.06);
+  --surface-line: rgb(255 255 255 / 0.08);
+  --ink: #f5f5f7;
+  --sub: #8e8e93;
+}
+
+@theme {
+  --color-brand: #8b7cf6;
+  --color-brand-2: #a78bfa;
+  --color-accent: #e88bc4;
+
+  --color-lobby-bg: var(--page);
+  --color-lobby-card: var(--surface);
+  --color-lobby-line: var(--surface-line);
+  --color-lobby-ink: var(--ink);
+  --color-lobby-sub: var(--sub);
+
+  --color-night-from: #0f1117;
+  --color-night-to: #1a1d29;
+  --color-glass: rgb(255 255 255 / 0.06);
+  --color-glass-line: rgb(255 255 255 / 0.08);
+  --color-bubble-peer: rgb(255 255 255 / 0.08);
+  --color-night-ink: #f5f5f7;
+  --color-night-sub: #8e8e93;
+
+  /* 仅用于错误提示的中性红 */
+  --color-danger: #e5484d;
+
+  --radius-sm: 12px;
+  --radius-card: 20px;
+  --radius-panel: 24px;
+
+  --font-sans: 'Inter Variable', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+
+  --shadow-soft: 0 1px 2px rgb(16 16 32 / 0.04), 0 4px 16px rgb(16 16 32 / 0.04);
+
+  --animate-fade-up: fade-up 200ms ease-out both;
+  --animate-breathe: breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* 浅色到暗色的背景过渡：两层固定定位背景，暗色层按路由切换 opacity（300ms ease-out）。 */
+.theme-layer {
+  transition: opacity 300ms ease-out;
+}
+
+html {
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* prefers-reduced-motion：关闭全部动画与过渡，只保留瞬时切换。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

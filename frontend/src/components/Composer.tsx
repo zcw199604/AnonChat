@@ -23,7 +23,7 @@ interface ComposerProps {
 
 const TYPING_THROTTLE_MS = 3000
 
-/** 输入框：Enter 发送/Shift+Enter 换行、字数限制、表情面板、输入中节流。 */
+/** 输入框：Enter 发送/Shift+Enter 换行、字数限制、表情面板、输入中节流。暗色玻璃风格。 */
 export function Composer({ onSend, onTyping, maxChars = 1000, disabled }: ComposerProps) {
   const [value, setValue] = useState('')
   const [showEmoji, setShowEmoji] = useState(false)
@@ -50,14 +50,17 @@ export function Composer({ onSend, onTyping, maxChars = 1000, disabled }: Compos
   }
 
   return (
-    <div className="border-t border-slate-800 p-2">
+    <div className="border-t border-glass-line p-3">
       {showEmoji && (
-        <div className="grid grid-cols-10 gap-1 mb-2 max-h-40 overflow-y-auto" data-testid="emoji-panel">
+        <div
+          className="mb-2 grid max-h-40 grid-cols-10 gap-1 overflow-y-auto"
+          data-testid="emoji-panel"
+        >
           {EMOJIS.map((e) => (
             <button
               type="button"
               key={e}
-              className="text-lg hover:bg-slate-800 rounded"
+              className="rounded-sm text-lg transition duration-150 ease-out hover:bg-glass"
               onClick={() => handleChange(value + e)}
             >
               {e}
@@ -69,14 +72,14 @@ export function Composer({ onSend, onTyping, maxChars = 1000, disabled }: Compos
         <button
           type="button"
           aria-label="表情"
-          className="px-2 py-1 rounded hover:bg-slate-800"
+          className="rounded-sm px-2 py-1 text-night-ink transition duration-150 ease-out hover:bg-glass"
           onClick={() => setShowEmoji((v) => !v)}
         >
           😊
         </button>
         <textarea
           aria-label="消息输入框"
-          className="flex-1 resize-none bg-slate-800 rounded px-3 py-2 text-slate-100 outline-none"
+          className="flex-1 resize-none rounded-sm border border-glass-line bg-glass px-3 py-2 text-night-ink outline-none placeholder:text-night-sub"
           rows={2}
           value={value}
           disabled={disabled}
@@ -90,14 +93,15 @@ export function Composer({ onSend, onTyping, maxChars = 1000, disabled }: Compos
         />
         <button
           type="button"
-          className="px-3 py-2 rounded bg-indigo-600 disabled:opacity-40"
+          className="h-11 w-11 shrink-0 rounded-full text-sm font-medium text-white transition duration-150 ease-out disabled:opacity-40"
+          style={{ background: 'linear-gradient(135deg, var(--color-brand), var(--color-accent))' }}
           disabled={!canSend}
           onClick={submit}
         >
           发送
         </button>
       </div>
-      <div className={`text-xs mt-1 ${tooLong ? 'text-red-400' : 'text-slate-500'}`}>
+      <div className={`mt-1 text-[11px] ${tooLong ? 'text-danger' : 'text-night-sub'}`}>
         {len} / {maxChars}
       </div>
     </div>

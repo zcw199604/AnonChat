@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="AnonChat">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#8B7CF6"/>
+      <stop offset="100%" stop-color="#E88BC4"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#g)"/>
+  <circle cx="256" cy="216" r="74" fill="#FFFFFF" fill-opacity="0.92"/>
+  <path d="M112 424c0-79.5 64.5-144 144-144s144 64.5 144 144z" fill="#FFFFFF" fill-opacity="0.92"/>
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#FFFFFF" stroke-opacity="0.35" stroke-width="14"/>
+</svg>

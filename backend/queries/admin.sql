@@ -40,7 +40,7 @@ LIMIT sqlc.arg(lim)::int;
 -- ---- 举报 ----
 
 -- name: ListReports :many
-SELECT id, reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, status, handled_by, handled_at, created_at
+SELECT id, reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, status, handled_by, handled_at, created_at, target_type, target_id
 FROM reports
 WHERE (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status)::text)
   AND (
@@ -52,7 +52,7 @@ ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(lim)::int;
 
 -- name: GetReportByID :one
-SELECT id, reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, status, handled_by, handled_at, created_at
+SELECT id, reporter_identity_id, reported_identity_id, conversation_id, reason, note, snapshot, status, handled_by, handled_at, created_at, target_type, target_id
 FROM reports
 WHERE id = $1;
 

@@ -100,19 +100,29 @@ func mustFound(t *testing.T, c *websocket.Conn) string {
 	if env.Type != realtime.TypeMatchFound {
 		t.Fatalf("应为 match.found, 实际 %q (%s)", env.Type, env.Data)
 	}
+	// how.md 3.4：peer 里去掉了 nickname 与 avatarSeed，只保留 memberId 与公开资料。
 	var p struct {
 		ConversationID string `json:"conversationId"`
 		Peer           struct {
-			MemberID   int32  `json:"memberId"`
-			Nickname   string `json:"nickname"`
-			AvatarSeed string `json:"avatarSeed"`
+			MemberID int32    `json:"memberId"`
+			Gender   *string  `json:"gender"`
+			Tags     []string `json:"tags"`
 		} `json:"peer"`
 	}
 	if err := json.Unmarshal(env.Data, &p); err != nil {
 		t.Fatalf("解析 match.found 失败: %v", err)
 	}
-	if p.ConversationID == "" || p.Peer.Nickname == "" {
+	if p.ConversationID == "" || p.Peer.MemberID == 0 {
 		t.Fatalf("match.found 载荷不全: %s", env.Data)
+	}
+	// 防泄漏：事件负载里不得出现任何身份标识字段（how.md 3.8）。
+	for _, forbidden := range []string{"identity_id", "identityId", "token", "ip", "account", "phone"} {
+		if strings.Contains(string(env.Data), `"`+forbidden+`"`) {
+			t.Fatalf("match.found 出现禁止字段 %q: %s", forbidden, env.Data)
+		}
+	}
+	if strings.Contains(string(env.Data), "nickname") || strings.Contains(string(env.Data), "avatarSeed") {
+		t.Fatalf("match.found 不应包含 nickname/avatarSeed: %s", env.Data)
 	}
 	return p.ConversationID
 }

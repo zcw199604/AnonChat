@@ -108,6 +108,10 @@ func (s *Service) RegisterWS(router *realtime.Router, verificationMode string) {
 		func(ctx context.Context, c *realtime.Conn, env realtime.Envelope) {
 			s.HandleSubscribe(ctx, c, env)
 		})
+	router.Handle(realtime.TypeTyping, realtime.RequireVerified(verificationMode)(
+		func(ctx context.Context, c *realtime.Conn, env realtime.Envelope) {
+			s.HandleTyping(ctx, c, env)
+		}))
 }
 
 // HandleSend 处理 msg.send：校验 → 成员/会话状态 → 限流 → 内容过滤 → 落库 → ack → 广播。
@@ -218,12 +222,13 @@ func (s *Service) HandleSend(ctx context.Context, cl Client, env realtime.Envelo
 	}
 
 	// 再广播给会话全部订阅连接，排除“屏蔽了发送者”的身份。
+	// 昵称按会话类型处理：房间保留昵称、故事用角色名、1v1 置空（前端显示匿名代号）。
 	env2, eerr := realtime.NewEnvelope(realtime.TypeMsgNew, "", msgNewPayload{
 		ConversationID: convID.String(),
 		Message: msgNewMessage{
 			ID:            msg.ID,
 			MemberID:      member.MemberID,
-			Nickname:      ident.Nickname,
+			Nickname:      s.nicknameFor(ctx, conv, ident.Nickname, member.MemberID),
 			AvatarSeed:    ident.AvatarSeed,
 			Kind:          msg.Kind,
 			Body:          msg.Body,
@@ -294,6 +299,56 @@ func (s *Service) HandleRead(ctx context.Context, cl Client, env realtime.Envelo
 		}); err != nil {
 			s.internalError(cl, env.ID, err)
 		}
+	}
+}
+
+// typingPayload 是 typing 事件的负载（不含身份信息，只有会话内 memberId）。
+type typingPayload struct {
+	ConversationID string `json:"conversationId"`
+	MemberID       int32  `json:"memberId"`
+}
+
+// HandleTyping 处理 typing：校验成员与会话状态后，把「正在输入」广播给会话其他成员。
+func (s *Service) HandleTyping(ctx context.Context, c *realtime.Conn, env realtime.Envelope) {
+	var p sendPayload
+	if err := json.Unmarshal(env.Data, &p); err != nil {
+		c.SendError(env.ID, realtime.CodeInvalidRequest, "载荷格式错误")
+		return
+	}
+	convID, err := parseUUID(p.ConversationID)
+	if err != nil {
+		c.SendError(env.ID, realtime.CodeInvalidRequest, "会话 ID 非法")
+		return
+	}
+	ident := c.Identity()
+	member, err := s.q.GetMember(ctx, store.GetMemberParams{ConversationID: convID, IdentityID: ident.ID})
+	if err != nil || member.LeftAt.Valid {
+		c.SendError(env.ID, realtime.CodeNotMember, "你不在该会话中")
+		return
+	}
+	conv, err := s.q.GetConversation(ctx, convID)
+	if err != nil || conv.EndedAt.Valid {
+		c.SendError(env.ID, realtime.CodeConversationEnded, "会话已结束")
+		return
+	}
+	out, eerr := realtime.NewEnvelope(realtime.TypeTyping, "", typingPayload{
+		ConversationID: convID.String(),
+		MemberID:       member.MemberID,
+	})
+	if eerr != nil {
+		return
+	}
+	// 只发给会话订阅者；排除发送者自己，以及与之存在屏蔽关系的身份。
+	exclude := map[pgtype.UUID]struct{}{ident.ID: {}}
+	if s.blocker != nil {
+		if b, berr := s.blocker.Related(ctx, ident.ID); berr == nil {
+			for id := range b {
+				exclude[id] = struct{}{}
+			}
+		}
+	}
+	if s.broker != nil {
+		s.broker.Broadcast(convID, out, exclude)
 	}
 }
 

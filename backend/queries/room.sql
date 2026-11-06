@@ -1,7 +1,7 @@
 -- ---- 聊天室 ----
 
 -- name: ListRooms :many
-SELECT id, conversation_id, slug, name, description, max_members, sort_order
+SELECT id, conversation_id, slug, name, description, emoji, max_members, sort_order
 FROM rooms
 WHERE archived_at IS NULL
 ORDER BY sort_order;

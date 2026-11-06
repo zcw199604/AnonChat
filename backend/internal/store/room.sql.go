@@ -115,7 +115,7 @@ func (q *Queries) ListRoomMessagesDesc(ctx context.Context, arg ListRoomMessages
 
 const listRooms = `-- name: ListRooms :many
 
-SELECT id, conversation_id, slug, name, description, max_members, sort_order
+SELECT id, conversation_id, slug, name, description, emoji, max_members, sort_order
 FROM rooms
 WHERE archived_at IS NULL
 ORDER BY sort_order
@@ -127,6 +127,7 @@ type ListRoomsRow struct {
 	Slug           string      `json:"slug"`
 	Name           string      `json:"name"`
 	Description    string      `json:"description"`
+	Emoji          string      `json:"emoji"`
 	MaxMembers     int32       `json:"max_members"`
 	SortOrder      int32       `json:"sort_order"`
 }
@@ -147,6 +148,7 @@ func (q *Queries) ListRooms(ctx context.Context) ([]ListRoomsRow, error) {
 			&i.Slug,
 			&i.Name,
 			&i.Description,
+			&i.Emoji,
 			&i.MaxMembers,
 			&i.SortOrder,
 		); err != nil {

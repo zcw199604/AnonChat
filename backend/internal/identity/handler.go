@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/store"
@@ -41,12 +42,79 @@ type identityResponse struct {
 	Verified   bool   `json:"verified"`
 }
 
-// meResponse 是 GET /api/identity/me 的响应。
-type meResponse struct {
-	Nickname         string `json:"nickname"`
-	AvatarSeed       string `json:"avatarSeed"`
-	Verified         bool   `json:"verified"`
-	VerificationMode string `json:"verificationMode"`
+// profileView 是资料视图。
+type profileView struct {
+	Gender         string   `json:"gender"`
+	Age            *int16   `json:"age"`
+	Province       *string  `json:"province"`
+	ProvincePublic bool     `json:"provincePublic"`
+	Tags           []string `json:"tags"`
+	CleanMode      bool     `json:"cleanMode"`
+}
+
+// matchPrefsView 是匹配偏好视图。
+type matchPrefsView struct {
+	Gender       string `json:"gender"`
+	SameProvince bool   `json:"sameProvince"`
+}
+
+// vipView 是 VIP 状态视图。
+type vipView struct {
+	Active bool    `json:"active"`
+	Until  *string `json:"until"`
+}
+
+// MeResponse 是 GET /api/identity/me 的响应（含资料、匹配偏好、VIP 与广播卡）。
+type MeResponse struct {
+	Nickname         string         `json:"nickname"`
+	AvatarSeed       string         `json:"avatarSeed"`
+	Verified         bool           `json:"verified"`
+	VerificationMode string         `json:"verificationMode"`
+	PublicCode       string         `json:"publicCode"`
+	Profile          profileView    `json:"profile"`
+	MatchPrefs       matchPrefsView `json:"matchPrefs"`
+	Vip              vipView        `json:"vip"`
+	BroadcastCards   int32          `json:"broadcastCards"`
+}
+
+// NewMeResponse 依据身份记录构造 me 响应（只有本人能看到，允许包含 vip.until）。
+func NewMeResponse(ident *store.Identity, verificationMode string, now time.Time) MeResponse {
+	vipActive := ident.VipUntil.Valid && ident.VipUntil.Time.After(now)
+	var until *string
+	if ident.VipUntil.Valid {
+		v := ident.VipUntil.Time.UTC().Format(time.RFC3339)
+		until = &v
+	}
+	tags := ident.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	var province *string
+	if ident.Province != nil {
+		p := *ident.Province
+		province = &p
+	}
+	return MeResponse{
+		Nickname:         ident.Nickname,
+		AvatarSeed:       ident.AvatarSeed,
+		Verified:         ident.AccountID.Valid,
+		VerificationMode: verificationMode,
+		PublicCode:       ident.PublicCode,
+		Profile: profileView{
+			Gender:         ident.Gender,
+			Age:            ident.Age,
+			Province:       province,
+			ProvincePublic: ident.ProvincePublic,
+			Tags:           tags,
+			CleanMode:      ident.CleanMode,
+		},
+		MatchPrefs: matchPrefsView{
+			Gender:       ident.MatchGender,
+			SameProvince: ident.MatchSameProvince,
+		},
+		Vip:            vipView{Active: vipActive, Until: until},
+		BroadcastCards: ident.BroadcastCards,
+	}
 }
 
 // Create 处理 POST /api/identity：有有效 Cookie 时返回现有身份，否则新建。
@@ -80,12 +148,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, ErrUnauthorized)
 		return
 	}
-	httpx.WriteJSON(w, http.StatusOK, meResponse{
-		Nickname:         ident.Nickname,
-		AvatarSeed:       ident.AvatarSeed,
-		Verified:         ident.AccountID.Valid,
-		VerificationMode: h.verificationMode,
-	})
+	httpx.WriteJSON(w, http.StatusOK, NewMeResponse(ident, h.verificationMode, time.Now()))
 }
 
 // Reset 处理 POST /api/identity/reset（需经 RequireIdentity）。

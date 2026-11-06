@@ -118,6 +118,8 @@ func (s *Service) ListMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range out {
 		out[i].BurnAfterRead = conv.BurnAfterRead
+		// 房间保留昵称；故事会话显示角色名；1v1 会话置空（前端改用匿名代号）。
+		out[i].Nickname = s.nicknameFor(r.Context(), conv, out[i].Nickname, out[i].MemberID)
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }

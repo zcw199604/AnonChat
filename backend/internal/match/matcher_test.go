@@ -70,8 +70,8 @@ func setup(t *testing.T, pf Prefetcher, relaxAfter, tick time.Duration) (*memory
 	out := make(chan pair, 16)
 	clock := &fakeClock{}
 	clock.ns.Store(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano())
-	m := NewMemoryMatcher(pf, func(a, b *store.Identity) error {
-		out <- pair{a.ID, b.ID}
+	m := NewMemoryMatcher(pf, func(a, b *queueEntry) error {
+		out <- pair{a.ident.ID, b.ident.ID}
 		return nil
 	}, relaxAfter, tick)
 	m.now = clock.Now
@@ -202,7 +202,7 @@ func BenchmarkEnqueuePairing1000(b *testing.B) {
 	}
 	newEntry := &queueEntry{ident: &store.Identity{ID: uuidN(250)}, enqueuedAt: time.Now(), ic: IdentityContext{Blocked: blocked}}
 
-	m := NewMemoryMatcher(newPrefetcher(), func(a, b *store.Identity) error { return nil }, time.Minute, time.Hour)
+	m := NewMemoryMatcher(newPrefetcher(), func(a, b *queueEntry) error { return nil }, time.Minute, time.Hour)
 	m.now = time.Now
 	queue := make([]*queueEntry, len(base))
 
@@ -210,6 +210,6 @@ func BenchmarkEnqueuePairing1000(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		copy(queue, base)
 		m.queue = append(queue[:len(queue):len(queue)], newEntry)
-		m.tryFrom(len(m.queue) - 1)
+		m.tryPairFor(newEntry)
 	}
 }
