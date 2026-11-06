@@ -1,0 +1,2 @@
+# 每天 03:00 执行一次备份
+0 3 * * * /backup/run.sh >> /backups/backup.log 2>&1

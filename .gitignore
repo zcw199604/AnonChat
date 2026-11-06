@@ -1,0 +1,29 @@
+# 通用忽略
+.DS_Store
+*.log
+
+# 环境变量（只提交 .env.example）
+.env
+.env.*
+!.env.example
+
+# Go 构建产物
+backend/server
+backend/bin/
+backend/*.test
+
+# 前端依赖与构建产物
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
+
+# 生产敏感词库（不入库，仅在服务器上放置）
+deploy/wordlist/*.txt
+
+# 编辑器
+.idea/
+.vscode/
+*.swp

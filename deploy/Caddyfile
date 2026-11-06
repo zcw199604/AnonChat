@@ -1,0 +1,52 @@
+# AnonChat 边缘代理与静态资源服务。
+# SITE_ADDRESS：域名（自动申请 HTTPS）；或 ":80"（前有负载均衡时只做反向代理）。
+# ACME_EMAIL：Let's Encrypt 通知邮箱。
+# UPSTREAM_TRUSTED_PROXIES：信任的上游代理（决定是否采信 X-Forwarded-For）。
+#   默认留空 = 不信任任何上游，直接对公网暴露时安全（防伪造 XFF）。
+#   当前面有负载均衡/CDN 时，设为 private_ranges（或具体 CIDR，空格分隔）。
+{
+	email {$ACME_EMAIL}
+	servers {
+		trusted_proxies static {$UPSTREAM_TRUSTED_PROXIES:}
+	}
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+	root * /srv
+
+	# 后端 API 与 WebSocket
+	handle /api/* {
+		reverse_proxy backend:8080
+	}
+	handle /ws {
+		reverse_proxy backend:8080
+	}
+
+	# 内部指标不对外开放
+	handle /metrics {
+		respond 404
+	}
+
+	# 长期缓存的静态资源
+	handle /assets/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# SPA 回退到 index.html（不缓存）
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' wss:; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+	}
+}

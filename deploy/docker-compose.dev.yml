@@ -1,0 +1,25 @@
+# 开发与测试用 Compose：只启动 PostgreSQL。
+# 本机若已运行 PostgreSQL（端口 55432），可直接使用环境变量连接，无需 Docker。
+# V2 会在本文件增加 redis 和 minio 服务。
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: anonchat-postgres-dev
+    environment:
+      POSTGRES_USER: anonchat
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-anonchat}
+      POSTGRES_DB: anonchat_dev
+    ports:
+      - "55432:5432"
+    volumes:
+      - anonchat_pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anonchat -d anonchat_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  anonchat_pgdata:
