@@ -13,10 +13,14 @@ RUN go mod download
 COPY backend/ ./
 # 只构建 server 二进制（不构建 e2eseed 等测试工具）
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/server ./cmd/server
+# 预建媒体目录：distroless 没有 shell，只能在构建阶段创建后带属主复制过去。
+RUN mkdir -p /out/media
 
 # -------- 运行阶段 --------
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/server /server
+# media 命名卷首次挂载时会继承镜像中该目录的属主，nonroot(65532) 才能写入。
+COPY --from=build --chown=65532:65532 /out/media /data/media
 
 USER nonroot:nonroot
 EXPOSE 8080
