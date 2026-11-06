@@ -54,8 +54,8 @@ WHERE conversation_id = $1 AND left_at IS NULL;
 -- ---- 消息 ----
 
 -- name: InsertMessage :one
-INSERT INTO messages (conversation_id, sender_identity_id, sender_member_id, client_msg_id, kind, body)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO messages (conversation_id, sender_identity_id, sender_member_id, client_msg_id, kind, body, media_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (sender_identity_id, client_msg_id) DO NOTHING
 RETURNING id, conversation_id, sender_identity_id, sender_member_id, client_msg_id, kind, body, media_id, read_at, burned_at, created_at;
 

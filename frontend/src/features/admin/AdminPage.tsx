@@ -37,6 +37,7 @@ import type { AdminStats, AdminReportSummary, AdminReportDetail, AdminBan, Admin
 import { errorMessage } from '../../lib/api/errorMessages'
 import { useUiStore } from '../../stores/ui'
 import { validateBanForm, banSubjects } from './banForm'
+import { BotPanel } from './BotPanel'
 
 type Tab =
   | 'overview'
@@ -47,6 +48,7 @@ type Tab =
   | 'broadcasts'
   | 'codes'
   | 'works'
+  | 'bot'
   | 'lookup'
 
 interface SnapshotItem {
@@ -135,6 +137,7 @@ export default function AdminPage() {
           ['broadcasts', '广播审核'],
           ['codes', '激活码'],
           ['works', '作品审核'],
+          ['bot', 'Bot'],
           ['lookup', '按编号查身份'],
           ['audit', '审计'],
         ] as Array<[Tab, string]>).map(([k, label]) => (
@@ -156,6 +159,7 @@ export default function AdminPage() {
       {tab === 'broadcasts' && <BroadcastsView onError={handleErr} />}
       {tab === 'codes' && <CodesView onError={handleErr} />}
       {tab === 'works' && <WorksView onError={handleErr} />}
+      {tab === 'bot' && <BotPanel onError={handleErr} />}
       {tab === 'lookup' && <LookupView onError={handleErr} />}
     </main>
   )

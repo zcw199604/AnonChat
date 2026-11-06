@@ -233,6 +233,8 @@ type Limits struct {
 	BroadcastPost WindowLimit
 	// 发起故事（每身份每天）。
 	StoryCreate WindowLimit
+	// 后台"测试 bot 模型连接"（每管理员每分钟，how.md §15.3）。
+	BotSettingsTest WindowLimit
 }
 
 // DefaultLimits 返回 how.md 表中的默认限流值。
@@ -257,6 +259,7 @@ func DefaultLimits() Limits {
 		VIPRedeemPerIP:      WindowLimit{Limit: 20, Window: 10 * time.Minute},
 		BroadcastPost:       WindowLimit{Limit: 5, Window: 24 * time.Hour},
 		StoryCreate:         WindowLimit{Limit: 10, Window: 24 * time.Hour},
+		BotSettingsTest:     WindowLimit{Limit: 10, Window: time.Minute},
 	}
 }
 
@@ -287,5 +290,6 @@ func (l Limits) Scaled(m int) Limits {
 	l.VIPRedeemPerIP = sw(l.VIPRedeemPerIP)
 	l.BroadcastPost = sw(l.BroadcastPost)
 	l.StoryCreate = sw(l.StoryCreate)
+	l.BotSettingsTest = sw(l.BotSettingsTest)
 	return l
 }

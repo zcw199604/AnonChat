@@ -3,6 +3,7 @@ package match
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -48,6 +49,26 @@ type Matcher interface {
 	QueueLen() int
 }
 
+// BotProvider 由 bot 引擎实现（how.md §8）：匹配 goroutine 之外调用，返回可兜底的 bot。
+type BotProvider interface {
+	// PickBot 返回一个可用于和该用户配对的 bot 身份；没有可用的返回 nil, nil。
+	PickBot(ctx context.Context, user *store.Identity, ic IdentityContext) (*BotCandidate, error)
+	// BotMatched 通知引擎 bot 已与用户配对成功（引擎据此在 readDelay 后执行开场）。
+	BotMatched(conversationID, botIdentityID pgtype.UUID)
+	// FallbackAfter 返回当前的排队兜底时间，0 表示不兜底（how.md §15.2）。
+	// 只读内存缓存：匹配 goroutine 内不访问数据库。
+	FallbackAfter() time.Duration
+}
+
+// BotCandidate 是一个可用于和某用户配对的 bot。
+type BotCandidate struct {
+	Identity *store.Identity
+	Profile  PrefProfile
+}
+
+// fallbackTimeout 是兜底流程里调用 PickBot 的超时。
+const fallbackTimeout = 5 * time.Second
+
 type cmdKind int
 
 const (
@@ -55,6 +76,10 @@ const (
 	cmdCancel
 	cmdLeave
 	cmdRequeueFront
+	// cmdFallbackDone 让兜底失败的条目清除 pending，并把下次尝试时间推后 fallbackAfter。
+	cmdFallbackDone
+	// cmdClaim 在匹配 goroutine 内原子地认领（移出）兜底条目。
+	cmdClaim
 )
 
 type command struct {
@@ -64,12 +89,19 @@ type command struct {
 	id      pgtype.UUID
 	entries []*queueEntry
 	done    chan struct{}
+	// entry/claimed 供兜底命令使用：entry 是目标条目，claimed 由匹配 goroutine 写回认领结果。
+	entry   *queueEntry
+	claimed *bool
 }
 
 type queueEntry struct {
 	ident      *store.Identity
 	enqueuedAt time.Time
 	ic         IdentityContext
+	// retryAt 是上次兜底失败后设置的下次重试时间；到期时间 = max(enqueuedAt+当前after, retryAt)。
+	retryAt time.Time
+	// fallbackPending 表示已经有一个兜底 goroutine 在查询 bot，避免重复尝试。
+	fallbackPending bool
 }
 
 // memoryMatcher 是单 goroutine 驱动的内存匹配器：队列操作经命令通道串行化，配对判断只在内存进行。
@@ -81,6 +113,11 @@ type memoryMatcher struct {
 	now        func() time.Time
 	cmds       chan command
 	queue      []*queueEntry
+
+	// 兜底相关（SetBotFallback 之后才生效）。after 每次 tick 从 provider 现取（动态）。
+	provider  BotProvider
+	onBotPair func(entry *queueEntry, cand *BotCandidate) error
+	logger    *slog.Logger
 
 	// mu/queueLen 只用于对外提供线程安全的排队人数读数（仅供统计）。
 	mu       sync.Mutex
@@ -115,11 +152,25 @@ func (m *memoryMatcher) Run(ctx context.Context) {
 			return
 		case c := <-m.cmds:
 			m.process(c)
-			close(c.done)
+			// 内部命令（放回队首等）没有等待者，done 为空。
+			if c.done != nil {
+				close(c.done)
+			}
 		case <-ticker.C:
 			m.tryMatchAll()
+			m.tryFallback()
 		}
 	}
+}
+
+// setBotFallback 开启排队兜底。兜底时间由 provider.FallbackAfter() 动态提供（只读内存）。
+// onBotPair 在匹配 goroutine 之外执行（可以访问数据库），失败时条目会被放回队首。
+func (m *memoryMatcher) setBotFallback(p BotProvider, onBotPair func(entry *queueEntry, cand *BotCandidate) error, logger *slog.Logger) {
+	m.mu.Lock()
+	m.provider = p
+	m.onBotPair = onBotPair
+	m.logger = logger
+	m.mu.Unlock()
 }
 
 // Enqueue 实现 Matcher：先在 goroutine 之外预取身份约束，再提交入队命令。
@@ -178,9 +229,30 @@ func (m *memoryMatcher) process(c command) {
 		m.remove(c.id)
 		m.setQueueLen(len(m.queue))
 	case cmdRequeueFront:
+		// 兜底失败放回队首：重置兜底状态，避免立刻再次尝试。
+		now := m.now()
+		after := m.currentFallbackAfter()
+		for _, e := range c.entries {
+			e.fallbackPending = false
+			e.retryAt = now.Add(after)
+		}
 		m.queue = append(c.entries, m.queue...)
 		m.setQueueLen(len(m.queue))
 		m.tryMatchAll()
+	case cmdFallbackDone:
+		if m.contains(c.entry) {
+			c.entry.fallbackPending = false
+			c.entry.retryAt = m.now().Add(m.currentFallbackAfter())
+		}
+	case cmdClaim:
+		// 原子认领：条目仍在队列里才算认领成功（否则已被真人配走或用户取消）。
+		if m.contains(c.entry) {
+			m.removeEntry(c.entry)
+			m.setQueueLen(len(m.queue))
+			if c.claimed != nil {
+				*c.claimed = true
+			}
+		}
 	}
 }
 
@@ -268,6 +340,79 @@ func (m *memoryMatcher) tryMatchAll() {
 	}
 }
 
+// tryFallback 在定时扫描里为到期的条目发起 bot 兜底（how.md §8）。
+// 已经 pending 的条目跳过；pending 期间条目仍在队列里，可以继续和真人配对（真人优先）。
+func (m *memoryMatcher) tryFallback() {
+	m.mu.Lock()
+	provider, onBotPair := m.provider, m.onBotPair
+	m.mu.Unlock()
+	if provider == nil || onBotPair == nil {
+		return
+	}
+	// 兜底时间从 provider 现取（只读内存，不访问数据库）。
+	after := provider.FallbackAfter()
+	if after <= 0 {
+		return
+	}
+	now := m.now()
+	for _, e := range m.queue {
+		if e.fallbackPending {
+			continue
+		}
+		// 到期时间 = max(enqueuedAt + after, 上次失败后的重试时间)。
+		due := e.enqueuedAt.Add(after)
+		if e.retryAt.After(due) {
+			due = e.retryAt
+		}
+		if now.Before(due) {
+			continue
+		}
+		e.fallbackPending = true
+		go m.runFallback(e, provider, onBotPair)
+	}
+}
+
+// currentFallbackAfter 读取当前的兜底时间（只读内存，0 表示不兜底）。
+func (m *memoryMatcher) currentFallbackAfter() time.Duration {
+	m.mu.Lock()
+	provider := m.provider
+	m.mu.Unlock()
+	if provider == nil {
+		return 0
+	}
+	return provider.FallbackAfter()
+}
+
+// runFallback 在匹配 goroutine 之外查询 bot 并认领条目；匹配 goroutine 内不做任何数据库访问。
+func (m *memoryMatcher) runFallback(e *queueEntry, provider BotProvider, onBotPair func(entry *queueEntry, cand *BotCandidate) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), fallbackTimeout)
+	defer cancel()
+
+	cand, err := provider.PickBot(ctx, e.ident, e.ic)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("匹配兜底：挑选 bot 失败", "error", err)
+		}
+	}
+	if err != nil || cand == nil {
+		// 没有可用的 bot：清除 pending，等 after 之后再试。
+		m.do(command{kind: cmdFallbackDone, entry: e})
+		return
+	}
+
+	var claimed bool
+	m.do(command{kind: cmdClaim, entry: e, claimed: &claimed})
+	if !claimed {
+		return // 已被真人配走或用户取消，放弃认领
+	}
+	if err := onBotPair(e, cand); err != nil {
+		if m.logger != nil {
+			m.logger.Warn("匹配兜底：创建会话失败，放回队首", "error", err)
+		}
+		m.cmds <- command{kind: cmdRequeueFront, entries: []*queueEntry{e}}
+	}
+}
+
 // executePair 在独立 goroutine 中建会话并推送；失败则把两人放回队首。
 func (m *memoryMatcher) executePair(a, b *queueEntry) {
 	go func() {
@@ -317,6 +462,9 @@ func compatible(a, b PrefProfile) bool {
 	}
 	return true
 }
+
+// Compatible 是 compatible 的导出形式（how.md §8）：bot 包用同一规则筛选 bot。
+func Compatible(a, b PrefProfile) bool { return compatible(a, b) }
 
 // genderMatches 判断 a 的性别筛选是否接受 b（gender=secret 的人不满足任何性别筛选）。
 func genderMatches(a, b PrefProfile) bool {

@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getBottleContentByConversation = `-- name: GetBottleContentByConversation :one
+SELECT b.content
+FROM bottles b
+JOIN bottle_picks bp ON bp.bottle_id = b.id
+WHERE bp.conversation_id = $1
+LIMIT 1
+`
+
+// bot 提示词需要漂流瓶原文：按回复产生的会话反查瓶子内容。
+func (q *Queries) GetBottleContentByConversation(ctx context.Context, conversationID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getBottleContentByConversation, conversationID)
+	var content string
+	err := row.Scan(&content)
+	return content, err
+}
+
 const getBottlePick = `-- name: GetBottlePick :one
 SELECT bottle_id, picker_identity_id, conversation_id, picked_at
 FROM bottle_picks
@@ -205,6 +221,60 @@ type MarkBottleHeldParams struct {
 func (q *Queries) MarkBottleHeld(ctx context.Context, arg MarkBottleHeldParams) error {
 	_, err := q.db.Exec(ctx, markBottleHeld, arg.HeldBy, arg.HeldUntil, arg.ID)
 	return err
+}
+
+const pickBottleForBot = `-- name: PickBottleForBot :one
+
+SELECT b.id, b.identity_id, b.content, b.created_at
+FROM bottles b
+WHERE b.expires_at > $1::timestamptz
+  AND (b.status = 'floating' OR (b.status = 'held' AND b.held_until < $1::timestamptz))
+  AND b.created_at <= $2::timestamptz
+  AND NOT EXISTS (SELECT 1 FROM bots bo WHERE bo.identity_id = b.identity_id)
+  AND NOT EXISTS (
+      SELECT 1 FROM bottle_picks bp
+      WHERE bp.bottle_id = b.id AND bp.conversation_id IS NOT NULL
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM bottle_picks bp
+      WHERE bp.bottle_id = b.id AND bp.picker_identity_id = $3::uuid
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM blocks bl
+      WHERE (bl.blocker_identity_id = $3::uuid AND bl.blocked_identity_id = b.identity_id)
+         OR (bl.blocker_identity_id = b.identity_id AND bl.blocked_identity_id = $3::uuid)
+  )
+ORDER BY b.created_at
+LIMIT 1
+FOR UPDATE SKIP LOCKED
+`
+
+type PickBottleForBotParams struct {
+	Now           pgtype.Timestamptz `json:"now"`
+	CreatedBefore pgtype.Timestamptz `json:"created_before"`
+	BotIdentityID pgtype.UUID        `json:"bot_identity_id"`
+}
+
+type PickBottleForBotRow struct {
+	ID         pgtype.UUID        `json:"id"`
+	IdentityID pgtype.UUID        `json:"identity_id"`
+	Content    string             `json:"content"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+// ---- Bot 兜底（how.md §9）----
+// bot 挑一个还没人回复过的旧瓶子：未过期、已到最小年龄、投瓶人不是 bot、
+// 还没有任何回复、这个 bot 没捞过、双方没有屏蔽。FOR UPDATE SKIP LOCKED 避免并发抢同一个。
+func (q *Queries) PickBottleForBot(ctx context.Context, arg PickBottleForBotParams) (PickBottleForBotRow, error) {
+	row := q.db.QueryRow(ctx, pickBottleForBot, arg.Now, arg.CreatedBefore, arg.BotIdentityID)
+	var i PickBottleForBotRow
+	err := row.Scan(
+		&i.ID,
+		&i.IdentityID,
+		&i.Content,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const pickCandidateAny = `-- name: PickCandidateAny :one

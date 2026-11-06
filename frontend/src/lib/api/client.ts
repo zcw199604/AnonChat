@@ -30,6 +30,14 @@ export async function apiRequest<T>(
   }
 
   const res = await fetch(path, init)
+  return readResponse<T>(res)
+}
+
+/**
+ * 解析响应体：204 返回 undefined，非 2xx 抛出 ApiError（后端统一错误格式）。
+ * 导出给需要自定义请求体的调用方（例如后台的 multipart 上传）复用。
+ */
+export async function readResponse<T>(res: Response): Promise<T> {
   if (res.status === 204) {
     return undefined as T
   }
@@ -215,6 +223,8 @@ export interface ChatMessage {
   body: string
   createdAt: string
   burnAfterRead?: boolean
+  /** 媒体消息的访问地址（/api/media/<id>），仅图片/视频消息携带。 */
+  mediaUrl?: string
 }
 
 export function conversationMessages(

@@ -82,3 +82,8 @@ WITH batch AS (
     LIMIT 5000
 )
 DELETE FROM broadcasts WHERE id IN (SELECT id FROM batch);
+
+-- ---- Bot 用量（本包新增：固定保留 30 天，how.md §1）----
+
+-- name: DeleteOldBotUsage :execrows
+DELETE FROM bot_usage WHERE created_at < $1;

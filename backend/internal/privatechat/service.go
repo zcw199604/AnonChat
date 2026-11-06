@@ -268,6 +268,7 @@ func (s *Service) Join(ctx context.Context, requester *store.Identity, token, pa
 		ClientMsgID:      clientMsgID,
 		Kind:             "system",
 		Body:             "对方已加入",
+		MediaID:          pgtype.UUID{}, // 系统消息没有媒体
 	})
 	if err != nil {
 		return pgtype.UUID{}, err

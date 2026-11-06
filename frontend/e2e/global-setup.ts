@@ -42,9 +42,14 @@ export default async function globalSetup(): Promise<void> {
     DELETE FROM private_links;
     DELETE FROM blocks;
     DELETE FROM messages;
+    DELETE FROM media_items;
+    DELETE FROM media_folders;
     DELETE FROM conversation_members;
     DELETE FROM access_logs;
     DELETE FROM sms_codes;
+    DELETE FROM bot_usage;
+    DELETE FROM bots;
+    DELETE FROM character_cards;
     DELETE FROM identities;
     DELETE FROM verified_accounts;
     DELETE FROM conversations WHERE kind <> 'room';

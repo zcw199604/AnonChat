@@ -10,6 +10,8 @@ export interface StoredMessage {
   body: string
   createdAt: string
   burnAfterRead?: boolean
+  /** 媒体消息的访问地址（/api/media/<id>）。 */
+  mediaUrl?: string
 }
 
 const MAX_MESSAGES = 500

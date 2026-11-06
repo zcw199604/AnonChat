@@ -136,6 +136,65 @@ type Block struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
+type Bot struct {
+	ID                     pgtype.UUID        `json:"id"`
+	IdentityID             pgtype.UUID        `json:"identity_id"`
+	Label                  string             `json:"label"`
+	CardID                 pgtype.UUID        `json:"card_id"`
+	MediaFolderID          pgtype.UUID        `json:"media_folder_id"`
+	Enabled                bool               `json:"enabled"`
+	Model                  string             `json:"model"`
+	Temperature            float32            `json:"temperature"`
+	MaxOutputTokens        int32              `json:"max_output_tokens"`
+	ServeMatch             bool               `json:"serve_match"`
+	ServeBottle            bool               `json:"serve_bottle"`
+	MaxActiveMatches       int32              `json:"max_active_matches"`
+	TotalTokenLimit        int64              `json:"total_token_limit"`
+	TotalReplyLimit        int64              `json:"total_reply_limit"`
+	WindowSeconds          int32              `json:"window_seconds"`
+	WindowTokenLimit       int64              `json:"window_token_limit"`
+	WindowReplyLimit       int32              `json:"window_reply_limit"`
+	ConvReplyLimit         int32              `json:"conv_reply_limit"`
+	ConvMinIntervalSeconds int32              `json:"conv_min_interval_seconds"`
+	ConvMediaLimit         int32              `json:"conv_media_limit"`
+	ReplyDelayMinMs        int32              `json:"reply_delay_min_ms"`
+	ReplyDelayMaxMs        int32              `json:"reply_delay_max_ms"`
+	TypingMsPerChar        int32              `json:"typing_ms_per_char"`
+	BottleIntervalSeconds  int32              `json:"bottle_interval_seconds"`
+	UsedTokens             int64              `json:"used_tokens"`
+	UsedReplies            int64              `json:"used_replies"`
+	CreatedAt              pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+}
+
+type BotSetting struct {
+	ID                   int16              `json:"id"`
+	Enabled              bool               `json:"enabled"`
+	LlmBaseUrl           string             `json:"llm_base_url"`
+	LlmApiKeyEnc         []byte             `json:"llm_api_key_enc"`
+	LlmApiKeyHint        string             `json:"llm_api_key_hint"`
+	LlmApiKeyBaseUrl     string             `json:"llm_api_key_base_url"`
+	LlmModel             string             `json:"llm_model"`
+	LlmTimeoutSeconds    int32              `json:"llm_timeout_seconds"`
+	LlmSendCacheKey      bool               `json:"llm_send_cache_key"`
+	MatchFallbackSeconds int32              `json:"match_fallback_seconds"`
+	BottleMinAgeSeconds  int32              `json:"bottle_min_age_seconds"`
+	Timezone             string             `json:"timezone"`
+	UpdatedBy            pgtype.UUID        `json:"updated_by"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
+type BotUsage struct {
+	ID               int64              `json:"id"`
+	BotID            pgtype.UUID        `json:"bot_id"`
+	ConversationID   pgtype.UUID        `json:"conversation_id"`
+	PromptTokens     int32              `json:"prompt_tokens"`
+	CompletionTokens int32              `json:"completion_tokens"`
+	CachedTokens     int32              `json:"cached_tokens"`
+	Replies          int32              `json:"replies"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
 type Bottle struct {
 	ID         pgtype.UUID        `json:"id"`
 	IdentityID pgtype.UUID        `json:"identity_id"`
@@ -164,6 +223,19 @@ type Broadcast struct {
 	RejectReason *string            `json:"reject_reason"`
 	ShowUntil    pgtype.Timestamptz `json:"show_until"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}
+
+type CharacterCard struct {
+	ID              pgtype.UUID        `json:"id"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description"`
+	Personality     string             `json:"personality"`
+	Scenario        string             `json:"scenario"`
+	FirstMessage    string             `json:"first_message"`
+	ExampleDialogue string             `json:"example_dialogue"`
+	SystemPrompt    string             `json:"system_prompt"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Conversation struct {
@@ -207,6 +279,25 @@ type Identity struct {
 	MatchSameProvince bool               `json:"match_same_province"`
 	VipUntil          pgtype.Timestamptz `json:"vip_until"`
 	BroadcastCards    int32              `json:"broadcast_cards"`
+}
+
+type MediaFolder struct {
+	ID        pgtype.UUID        `json:"id"`
+	Name      string             `json:"name"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type MediaItem struct {
+	ID           pgtype.UUID        `json:"id"`
+	FolderID     pgtype.UUID        `json:"folder_id"`
+	Kind         string             `json:"kind"`
+	Mime         string             `json:"mime"`
+	SizeBytes    int64              `json:"size_bytes"`
+	StorageKey   string             `json:"storage_key"`
+	OriginalName string             `json:"original_name"`
+	Tags         []string           `json:"tags"`
+	Caption      string             `json:"caption"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
 type Message struct {

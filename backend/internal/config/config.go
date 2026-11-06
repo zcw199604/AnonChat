@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -61,6 +62,32 @@ type Config struct {
 
 	// RateLimitMultiplier 把所有限流上限乘以该系数（默认 1；E2E 用 100 放宽）。
 	RateLimitMultiplier int
+
+	// BotEnabled 为 true 时启动 bot 引擎（worker、匹配兜底、漂流瓶循环）；管理接口始终可用。
+	BotEnabled bool
+	// LLMBaseURL 是 OpenAI 兼容接口地址（不带 /chat/completions）。
+	LLMBaseURL string
+	// LLMAPIKey 是 LLM 接口密钥；BotEnabled 为 true 时必填。
+	LLMAPIKey string
+	// LLMModel 是默认模型；BotEnabled 为 true 时必填，单个 bot 可以覆盖。
+	LLMModel string
+	// LLMTimeout 是单次 LLM 请求的超时。
+	LLMTimeout time.Duration
+	// LLMSendCacheKey 表示是否在请求里带 prompt_cache_key（遇到拒绝未知参数的服务商时关掉）。
+	LLMSendCacheKey bool
+	// BotMatchFallbackAfter 是排队多久后由 bot 兜底。
+	BotMatchFallbackAfter time.Duration
+	// BotBottleMinAge 是瓶子投出多久仍没人回复，bot 才会去回。
+	BotBottleMinAge time.Duration
+	// MediaRoot 是媒体文件根目录（启动时自动创建）。
+	MediaRoot string
+	// MediaMaxUploadMB 是单个媒体文件的大小上限（MB）。
+	MediaMaxUploadMB int
+	// BotTimezone 是 bot 提示词里显示当前时间用的时区，默认 Asia/Shanghai。
+	BotTimezone string
+	// SettingsEncKey 是后台敏感配置（模型 API Key）的加密密钥（AES-256-GCM，32 字节）。
+	// 未配置时后台不允许保存 API Key，其余设置照常可保存（how.md §15.1）。
+	SettingsEncKey []byte
 }
 
 // 允许的枚举值。
@@ -124,6 +151,34 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// 解析 AI 机器人与媒体库相关配置。
+	if cfg.BotEnabled, err = getBool("BOT_ENABLED", false); err != nil {
+		return nil, err
+	}
+	cfg.LLMBaseURL = getEnv("LLM_BASE_URL", "https://api.openai.com/v1")
+	cfg.LLMAPIKey = strings.TrimSpace(os.Getenv("LLM_API_KEY"))
+	cfg.LLMModel = strings.TrimSpace(os.Getenv("LLM_MODEL"))
+	if cfg.LLMTimeout, err = getDuration("LLM_TIMEOUT", 60*time.Second); err != nil {
+		return nil, err
+	}
+	if cfg.LLMSendCacheKey, err = getBool("LLM_SEND_CACHE_KEY", true); err != nil {
+		return nil, err
+	}
+	if cfg.BotMatchFallbackAfter, err = getDuration("BOT_MATCH_FALLBACK_AFTER", 10*time.Second); err != nil {
+		return nil, err
+	}
+	if cfg.BotBottleMinAge, err = getDuration("BOT_BOTTLE_MIN_AGE", 30*time.Minute); err != nil {
+		return nil, err
+	}
+	cfg.MediaRoot = getEnv("MEDIA_ROOT", "./data/media")
+	if cfg.MediaMaxUploadMB, err = getInt("MEDIA_MAX_UPLOAD_MB", 100); err != nil {
+		return nil, err
+	}
+	cfg.BotTimezone = getEnv("BOT_TIMEZONE", "Asia/Shanghai")
+	if cfg.SettingsEncKey, err = getBase64Key("SETTINGS_ENC_KEY"); err != nil {
+		return nil, err
+	}
+
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -176,6 +231,35 @@ func (c *Config) validate() error {
 		return fmt.Errorf("生产环境 RATE_LIMIT_MULTIPLIER 必须为 1")
 	}
 
+	// 校验 AI 机器人与媒体库配置。
+	// 模型接入既可用环境变量，也可在后台配置（how.md §15）：因此这里不再强制要求
+	// LLM_API_KEY / LLM_MODEL，配置是否可用由后台设置（bot_settings）判定。
+	if strings.TrimSpace(c.LLMBaseURL) == "" {
+		return fmt.Errorf("LLM_BASE_URL 不能为空")
+	}
+	if c.LLMTimeout <= 0 {
+		return fmt.Errorf("LLM_TIMEOUT 必须为正数")
+	}
+	if c.BotMatchFallbackAfter <= 0 {
+		return fmt.Errorf("BOT_MATCH_FALLBACK_AFTER 必须为正数")
+	}
+	// 允许 0：测试里会把瓶子最小年龄设为 0，让 bot 立刻捞到。
+	if c.BotBottleMinAge < 0 {
+		return fmt.Errorf("BOT_BOTTLE_MIN_AGE 不能为负数")
+	}
+	if len(c.SettingsEncKey) != 0 && len(c.SettingsEncKey) != 32 {
+		return fmt.Errorf("SETTINGS_ENC_KEY 必须为 32 字节（base64 编码），当前 %d 字节", len(c.SettingsEncKey))
+	}
+	if strings.TrimSpace(c.MediaRoot) == "" {
+		return fmt.Errorf("MEDIA_ROOT 不能为空")
+	}
+	if c.MediaMaxUploadMB <= 0 {
+		return fmt.Errorf("MEDIA_MAX_UPLOAD_MB 必须为正数")
+	}
+	if strings.TrimSpace(c.BotTimezone) == "" {
+		return fmt.Errorf("BOT_TIMEZONE 不能为空")
+	}
+
 	// 校验管理后台 IP 白名单 CIDR。
 	for _, cidr := range c.AdminIPAllowlist {
 		if _, err := netip.ParsePrefix(cidr); err != nil {
@@ -212,6 +296,10 @@ func (c *Config) validate() error {
 		}
 		if c.WordlistPath == "" {
 			return fmt.Errorf("生产环境必须配置 WORDLIST_PATH")
+		}
+		// 只是提示：不配置时后台仍可用，但不能保存模型 API Key。
+		if len(c.SettingsEncKey) == 0 {
+			slog.Warn("生产环境未配置 SETTINGS_ENC_KEY，管理后台将无法保存模型 API Key")
 		}
 	}
 	return nil
@@ -273,6 +361,19 @@ func getInt(key string, def int) (int, error) {
 		return 0, fmt.Errorf("%s 不是合法的整数: %w", key, err)
 	}
 	return n, nil
+}
+
+// getBool 解析布尔环境变量，为空时返回默认值。
+func getBool(key string, def bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s 不是合法的布尔值: %w", key, err)
+	}
+	return b, nil
 }
 
 // splitList 把逗号分隔的字符串切成去空白的切片。

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,6 +36,10 @@ type Service struct {
 	burnDelay      time.Duration
 	burnTick       time.Duration
 	roomMsgLimiter RateLimiter
+
+	// observers 是会话事件观察者（bot 引擎等），由 AddObserver 注册。
+	obsMu     sync.RWMutex
+	observers []Observer
 }
 
 // Option 用于配置 Service。
@@ -199,6 +204,8 @@ func (s *Service) End(ctx context.Context, conversationID pgtype.UUID, reason st
 	if affected == 0 {
 		return nil // 已结束
 	}
+	// 真正结束（affected>0）才通知观察者，重复结束不再通知。
+	s.notifyEnded(conversationID)
 	if s.broker != nil {
 		msgType := realtime.TypeConvEnded
 		if conv.Kind == store.ConversationKindMatch {

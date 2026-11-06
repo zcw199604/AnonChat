@@ -12,12 +12,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/anonchat/anonchat/backend/internal/admin"
+	"github.com/anonchat/anonchat/backend/internal/bot"
 	"github.com/anonchat/anonchat/backend/internal/bottle"
 	"github.com/anonchat/anonchat/backend/internal/config"
 	"github.com/anonchat/anonchat/backend/internal/conversation"
 	"github.com/anonchat/anonchat/backend/internal/feed"
 	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/match"
+	"github.com/anonchat/anonchat/backend/internal/media"
 	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/privatechat"
@@ -51,6 +53,10 @@ type Deps struct {
 	Feed         *feed.Handler
 	Story        *story.Handler
 	StoryService *story.Service
+	Media        *media.Handler
+	BotAdmin     *bot.Handler
+	// BotEngine 为 nil 表示未启用 bot 引擎（BOT_ENABLED=false）。
+	BotEngine *bot.Engine
 }
 
 // Server 持有装配好的依赖。
@@ -128,6 +134,31 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 		admin.WithLoginLimiters(limits.AdminLogin.New(), limits.AdminLogin.New()))
 	adminSvc.SetResolver(resolver)
 
+	// AI 机器人：管理接口始终可用；引擎也始终创建并运行（how.md §15.2）。
+	// 生效配置（开关、模型接入、兜底时间、瓶龄、时区）来自 bot_settings，后台可热切换；
+	// 环境变量只用于首次初始化与 API Key 回退。
+	botSvc := bot.New(pool, logger, bot.WithConversation(convSvc))
+	initCtx, initCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	botSettings, err := bot.NewSettingsCache(initCtx, pool, logger, cfg.SettingsEncKey, bot.EnvSettings{
+		Enabled:            cfg.BotEnabled,
+		BaseURL:            cfg.LLMBaseURL,
+		APIKey:             cfg.LLMAPIKey,
+		Model:              cfg.LLMModel,
+		Timeout:            cfg.LLMTimeout,
+		SendCacheKey:       cfg.LLMSendCacheKey,
+		MatchFallbackAfter: cfg.BotMatchFallbackAfter,
+		BottleMinAge:       cfg.BotBottleMinAge,
+		Timezone:           cfg.BotTimezone,
+	}, false)
+	initCancel()
+	if err != nil {
+		return Deps{}, err
+	}
+	botEngine := bot.NewEngine(pool, logger, convSvc, nil, botSettings, bot.WithBottles(bottleSvc))
+	convSvc.AddObserver(botEngine)
+	matchSvc.SetBotFallback(botEngine)
+	botHandler := bot.NewHandler(botSvc, adminSvc, botEngine, botSettings, limits.BotSettingsTest.New(), logger)
+
 	// 资料与匹配偏好。
 	profileSvc := profile.New(pool, logger,
 		profile.WithFilter(filter),
@@ -157,6 +188,14 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 		story.WithMinDuration(cfg.StoryMinDuration),
 	)
 	storyHandler := story.NewHandler(storySvc, adminSvc)
+
+	// 媒体库：文件根目录在启动时自动创建；管理接口与用户侧文件访问始终注册。
+	mediaStorage, err := media.NewStorage(cfg.MediaRoot)
+	if err != nil {
+		return Deps{}, err
+	}
+	mediaSvc := media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB)
+	mediaHandler := media.NewHandler(mediaSvc, adminSvc)
 
 	// VERIFICATION_MODE=off 时不构造实名验证服务，也不注册 /api/verify/* 路由。
 	var verifyHandler *verify.Handler
@@ -195,6 +234,9 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 		Feed:         feedHandler,
 		Story:        storyHandler,
 		StoryService: storySvc,
+		Media:        mediaHandler,
+		BotAdmin:     botHandler,
+		BotEngine:    botEngine,
 	}, nil
 }
 
@@ -297,6 +339,11 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("POST /api/conversations/{id}/members/{memberId}/block", chatProtected(http.HandlerFunc(s.handleBlockMember)))
 	}
 
+	// 媒体文件（用户侧）：只有会话内消息引用过的媒体才可访问。
+	if s.deps.Media != nil {
+		mux.Handle("GET /api/media/{id}", chatProtected(http.HandlerFunc(s.deps.Media.ServeFileHandler)))
+	}
+
 	// 房间。
 	if s.deps.Room != nil {
 		mux.Handle("GET /api/rooms", chatProtected(http.HandlerFunc(s.deps.Room.ListRoomsHandler)))
@@ -331,7 +378,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /api/announcements", protected(http.HandlerFunc(s.deps.Feed.Announcements)))
 		mux.Handle("GET /api/broadcasts/current", protected(http.HandlerFunc(s.deps.Feed.CurrentBroadcasts)))
 		// 发布公开内容属于 UGC，与 V1 的漂流瓶一致挂 chatProtected：required 模式下要求已实名（审查意见 R3）。
-	mux.Handle("POST /api/broadcasts", chatProtected(http.HandlerFunc(s.deps.Feed.SubmitBroadcast)))
+		mux.Handle("POST /api/broadcasts", chatProtected(http.HandlerFunc(s.deps.Feed.SubmitBroadcast)))
 		mux.Handle("GET /api/broadcasts/mine", protected(http.HandlerFunc(s.deps.Feed.MyBroadcasts)))
 		mux.Handle("POST /api/broadcasts/{id}/report", protected(http.HandlerFunc(s.deps.Feed.ReportBroadcast)))
 		mux.Handle("GET /api/feed", protected(http.HandlerFunc(s.deps.Feed.Timeline)))
@@ -341,7 +388,7 @@ func (s *Server) Handler() http.Handler {
 	if s.deps.Story != nil {
 		mux.Handle("GET /api/stories", protected(http.HandlerFunc(s.deps.Story.ListStories)))
 		// 发起故事属于公开 UGC，同样挂 chatProtected（审查意见 R3）。
-	mux.Handle("POST /api/stories", chatProtected(http.HandlerFunc(s.deps.Story.CreateStory)))
+		mux.Handle("POST /api/stories", chatProtected(http.HandlerFunc(s.deps.Story.CreateStory)))
 		mux.Handle("GET /api/stories/{id}", protected(http.HandlerFunc(s.deps.Story.GetStory)))
 		mux.Handle("POST /api/stories/{id}/join", chatProtected(http.HandlerFunc(s.deps.Story.JoinStory)))
 		mux.Handle("POST /api/stories/{id}/end", chatProtected(http.HandlerFunc(s.deps.Story.EndStory)))
@@ -407,6 +454,31 @@ func (s *Server) adminHandler() http.Handler {
 		am.Handle("POST /api/admin/activation-batches", a.RequireAdmin(http.HandlerFunc(s.deps.VIP.CreateBatch)))
 		am.Handle("POST /api/admin/activation-batches/{id}/revoke", a.RequireAdmin(http.HandlerFunc(s.deps.VIP.RevokeBatch)))
 	}
+	if s.deps.Media != nil {
+		am.Handle("GET /api/admin/media-folders", a.RequireAdmin(http.HandlerFunc(s.deps.Media.ListFoldersHandler)))
+		am.Handle("POST /api/admin/media-folders", a.RequireAdmin(http.HandlerFunc(s.deps.Media.CreateFolderHandler)))
+		am.Handle("PATCH /api/admin/media-folders/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.Media.RenameFolderHandler)))
+		am.Handle("DELETE /api/admin/media-folders/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.Media.DeleteFolderHandler)))
+		am.Handle("GET /api/admin/media-folders/{id}/items", a.RequireAdmin(http.HandlerFunc(s.deps.Media.ListItemsHandler)))
+		am.Handle("POST /api/admin/media-folders/{id}/items", a.RequireAdmin(http.HandlerFunc(s.deps.Media.UploadItemsHandler)))
+		am.Handle("PATCH /api/admin/media-items/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.Media.UpdateItemHandler)))
+		am.Handle("DELETE /api/admin/media-items/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.Media.DeleteItemHandler)))
+		am.Handle("GET /api/admin/media-items/{id}/file", a.RequireAdmin(http.HandlerFunc(s.deps.Media.AdminFileHandler)))
+	}
+	if s.deps.BotAdmin != nil {
+		am.Handle("GET /api/admin/character-cards", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ListCardsHandler)))
+		am.Handle("POST /api/admin/character-cards", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.CreateCardHandler)))
+		am.Handle("PUT /api/admin/character-cards/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.UpdateCardHandler)))
+		am.Handle("DELETE /api/admin/character-cards/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.DeleteCardHandler)))
+		am.Handle("GET /api/admin/bots", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ListBotsHandler)))
+		am.Handle("POST /api/admin/bots", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.CreateBotHandler)))
+		am.Handle("PUT /api/admin/bots/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.UpdateBotHandler)))
+		am.Handle("POST /api/admin/bots/{id}/reset-usage", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ResetUsageHandler)))
+		am.Handle("DELETE /api/admin/bots/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.DeleteBotHandler)))
+		am.Handle("GET /api/admin/bot-settings", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.GetSettingsHandler)))
+		am.Handle("PUT /api/admin/bot-settings", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.UpdateSettingsHandler)))
+		am.Handle("POST /api/admin/bot-settings/test", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.TestSettingsHandler)))
+	}
 	if s.deps.Story != nil {
 		am.Handle("GET /api/admin/works", a.RequireAdmin(http.HandlerFunc(s.deps.Story.AdminListWorks)))
 		am.Handle("POST /api/admin/works/{id}/approve", a.RequireAdmin(http.HandlerFunc(s.deps.Story.AdminApproveWork)))
@@ -446,6 +518,9 @@ func (s *Server) StartBackground(ctx context.Context) {
 	}
 	if s.deps.StoryService != nil {
 		go runStoryExpiry(ctx, s.deps.StoryService, s.deps.Logger)
+	}
+	if s.deps.BotEngine != nil {
+		go s.deps.BotEngine.Run(ctx)
 	}
 }
 

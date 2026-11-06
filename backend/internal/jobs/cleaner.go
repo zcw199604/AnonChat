@@ -17,6 +17,8 @@ const (
 	defaultBatchSize = 5000
 	defaultInterval  = 10 * time.Minute
 	smsRetention     = 24 * time.Hour
+	// botUsageRetention 是 bot 用量记录的固定保留期（窗口上限最多 7 天，不受影响）。
+	botUsageRetention = 30 * 24 * time.Hour
 )
 
 // Options 是清理任务的可调参数。
@@ -96,6 +98,7 @@ func (c *Cleaner) RunOnce(ctx context.Context) (map[string]int64, error) {
 	auditCutoff := ts(now.Add(-c.opts.AuditRetention))
 	bottleCutoff := ts(now.Add(-c.opts.BottleTTL))
 	smsCutoff := ts(now.Add(-smsRetention))
+	botUsageCutoff := ts(now.Add(-botUsageRetention))
 	nowTS := ts(now)
 
 	// 1. 过期消息（分批）。
@@ -190,6 +193,13 @@ func (c *Cleaner) RunOnce(ctx context.Context) (map[string]int64, error) {
 	// 10. 已撤销且无人引用的身份（AUDIT_RETENTION）。
 	if err := c.loop(ctx, stats, "identities", func() (int64, error) {
 		return c.q.DeleteUnreferencedRevokedIdentities(ctx, auditCutoff)
+	}); err != nil {
+		return stats, err
+	}
+
+	// 11. bot 用量记录（固定 30 天）。
+	if err := c.loop(ctx, stats, "bot_usage", func() (int64, error) {
+		return c.q.DeleteOldBotUsage(ctx, botUsageCutoff)
 	}); err != nil {
 		return stats, err
 	}

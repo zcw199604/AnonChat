@@ -24,12 +24,14 @@ import (
 
 	"github.com/anonchat/anonchat/backend/internal/admin"
 	"github.com/anonchat/anonchat/backend/internal/api"
+	"github.com/anonchat/anonchat/backend/internal/bot"
 	"github.com/anonchat/anonchat/backend/internal/bottle"
 	"github.com/anonchat/anonchat/backend/internal/config"
 	"github.com/anonchat/anonchat/backend/internal/conversation"
 	"github.com/anonchat/anonchat/backend/internal/feed"
 	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/match"
+	"github.com/anonchat/anonchat/backend/internal/media"
 	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/privatechat"
@@ -80,6 +82,28 @@ type Config struct {
 
 	SMS   verify.SMSProvider
 	Clock func() time.Time
+
+	// MediaRoot 是媒体文件根目录，默认 t.TempDir()。
+	MediaRoot string
+
+	// BotLLM 非 nil 时启用 bot 引擎（相当于 BOT_ENABLED=true）。
+	BotLLM bot.LLM
+	// BotFallbackAfter 是排队多久后由 bot 兜底，默认 200ms。
+	BotFallbackAfter time.Duration
+	// BotTick 是匹配器定时扫描间隔，默认 20ms。
+	BotTick time.Duration
+	// BotSettingsTestLimiter 限制"测试连接"接口的频率（默认 AllowAll）。
+	BotSettingsTestLimiter moderation.RateLimiter
+	// BotRefresh 是 bot 列表缓存刷新间隔，默认 20ms。
+	BotRefresh time.Duration
+	// BotBottleLoop 是漂流瓶循环间隔，默认 20ms。
+	BotBottleLoop time.Duration
+	// BottleMinAge 是瓶子投出多久后 bot 才会回复，默认 0。
+	BottleMinAge time.Duration
+	// BotSettingsDisabled 为 true 时，初始化写入的全局设置为「关闭」（用于热切换测试）。
+	BotSettingsDisabled bool
+	// NoSettingsEncKey 为 true 时不配置 SETTINGS_ENC_KEY（后台不能保存 API Key）。
+	NoSettingsEncKey bool
 }
 
 // Env 是集成测试环境的句柄，暴露底层 api.Deps 以便直接调用各服务。
@@ -132,7 +156,7 @@ func runMigrations(t *testing.T, url string) {
 // Truncate 清空身份/验证相关表，确保测试之间互不影响。
 func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	const q = `TRUNCATE identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_users, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes RESTART IDENTITY CASCADE`
+	const q = `TRUNCATE identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_users, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes, character_cards, media_folders, media_items, bots, bot_usage, bot_settings RESTART IDENTITY CASCADE`
 	if _, err := pool.Exec(context.Background(), q); err != nil {
 		t.Fatalf("清空表失败: %v", err)
 	}
@@ -218,7 +242,12 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 	if grace <= 0 {
 		grace = 30 * time.Second
 	}
-	matchSvc := match.New(pool, logger, convSvc, gateway.Hub(), matchLimiter, relaxAfter, grace, match.WithClock(clock))
+	botTick := c.BotTick
+	if botTick <= 0 {
+		botTick = 20 * time.Millisecond
+	}
+	matchSvc := match.New(pool, logger, convSvc, gateway.Hub(), matchLimiter, relaxAfter, grace,
+		match.WithClock(clock), match.WithTick(botTick))
 	matchSvc.RegisterWS(gateway.Router(), cfg.VerificationMode)
 	gateway.AddObserver(matchSvc)
 	gateway.SetResumableProvider(matchSvc.Resumable)
@@ -277,10 +306,63 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 	)
 	storyHandler := story.NewHandler(storySvc, adminSvc)
 
+	// AI 机器人：引擎始终创建并运行（how.md §15.2）；BotLLM 非 nil 时注入假模型并默认启用设置。
+	// 生效配置写在 bot_settings 里：开关/模型/兜底时间/瓶龄/时区都从数据库读，
+	// 因此测试可以在运行时用 PUT /api/admin/bot-settings 热切换。
+	botSvc := bot.New(pool, logger, bot.WithConversation(convSvc))
+	bottleLoop := c.BotBottleLoop
+	if bottleLoop <= 0 {
+		bottleLoop = 20 * time.Millisecond
+	}
+	refresh := c.BotRefresh
+	if refresh <= 0 {
+		refresh = 20 * time.Millisecond
+	}
+	fallbackAfter := c.BotFallbackAfter
+	if fallbackAfter <= 0 {
+		fallbackAfter = 200 * time.Millisecond
+	}
+	botSettings, err := bot.NewSettingsCache(context.Background(), pool, logger, cfg.SettingsEncKey, bot.EnvSettings{
+		Enabled:            c.BotLLM != nil && !c.BotSettingsDisabled,
+		BaseURL:            "http://llm.test/v1",
+		Model:              "test-model",
+		Timeout:            cfg.LLMTimeout,
+		SendCacheKey:       true,
+		MatchFallbackAfter: fallbackAfter,
+		BottleMinAge:       c.BottleMinAge,
+		Timezone:           "Asia/Shanghai",
+	}, c.BotLLM != nil)
+	if err != nil {
+		t.Fatalf("初始化 bot 设置失败: %v", err)
+	}
+	botEngine := bot.NewEngine(pool, logger, convSvc, c.BotLLM, botSettings,
+		bot.WithClock(clock),
+		bot.WithRefreshInterval(refresh),
+		bot.WithBottleLoopInterval(bottleLoop),
+		bot.WithBottles(bottleSvc),
+	)
+	convSvc.AddObserver(botEngine)
+	matchSvc.SetBotFallback(botEngine)
+	botHandler := bot.NewHandler(botSvc, adminSvc, botEngine, botSettings,
+		limiterOr(c.BotSettingsTestLimiter), logger)
+	go botEngine.Run(mctx)
+
+	mediaRoot := c.MediaRoot
+	if mediaRoot == "" {
+		mediaRoot = t.TempDir()
+	}
+	cfg.MediaRoot = mediaRoot
+	mediaStorage, err := media.NewStorage(mediaRoot)
+	if err != nil {
+		t.Fatalf("构造媒体存储失败: %v", err)
+	}
+	mediaHandler := media.NewHandler(media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB), adminSvc)
+
 	deps := api.Deps{Cfg: cfg, Pool: pool, Logger: logger, Identity: idHandler, Verify: verHandler,
 		Realtime: gateway, Conversation: convSvc, Report: reportSvc, Ban: banSvc, Resolver: resolver,
 		Match: matchSvc, Room: roomSvc, Bottle: bottleSvc, Private: privateSvc, Admin: adminSvc,
-		Profile: profileHandler, VIP: vipHandler, Feed: feedHandler, Story: storyHandler, StoryService: storySvc}
+		Profile: profileHandler, VIP: vipHandler, Feed: feedHandler, Story: storyHandler, StoryService: storySvc,
+		Media: mediaHandler, BotAdmin: botHandler, BotEngine: botEngine}
 	srv := httptest.NewServer(api.NewServer(deps).Handler())
 	t.Cleanup(srv.Close)
 	return &Env{Server: srv, Deps: deps}
@@ -312,6 +394,13 @@ func buildConfig(c Config) *config.Config {
 		PhoneHmacKey:     c.HmacKey,
 		AdminIPAllowlist: c.AdminIPAllowlist,
 		StoryMinDuration: storyMin,
+		// 媒体库：根目录由 MustEnv 注入（默认 t.TempDir()）。
+		MediaRoot:        c.MediaRoot,
+		MediaMaxUploadMB: 100,
+		BotTimezone:      "Asia/Shanghai",
+		LLMTimeout:       10 * time.Second,
+		BotBottleMinAge:  bottleMinAgeOrZero(c.BottleMinAge),
+		SettingsEncKey:   settingsEncKey(c.NoSettingsEncKey),
 	}
 }
 
@@ -434,6 +523,26 @@ func SeedRooms(t *testing.T, pool *pgxpool.Pool) {
 			t.Fatalf("插入房间失败: %v", err)
 		}
 	}
+}
+
+// settingsEncKey 返回后台设置的加密密钥（测试默认给 32 字节；NoSettingsEncKey 时返回 nil）。
+func settingsEncKey(disabled bool) []byte {
+	if disabled {
+		return nil
+	}
+	k := make([]byte, 32)
+	for i := range k {
+		k[i] = byte(200 + i)
+	}
+	return k
+}
+
+// bottleMinAgeOrZero 返回瓶子最小年龄（测试默认 0，让 bot 立刻能捞到）。
+func bottleMinAgeOrZero(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 // limiterOr 返回给定限流器，nil 时回退 AllowAll。

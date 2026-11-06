@@ -39,6 +39,9 @@ const (
 	CodeStoryTaken      ErrorCode = "story_taken"
 	CodeStoryNotValid   ErrorCode = "story_not_valid"
 	CodeNotFound        ErrorCode = "not_found"
+
+	// 本包（AI 机器人 / 媒体库）新增错误码（how.md §4.1）：上传的媒体类型或大小不被接受。
+	CodeMediaRejected ErrorCode = "media_rejected"
 )
 
 // errorBody 是错误响应体中的 error 对象。
@@ -98,6 +101,8 @@ func statusForCode(code ErrorCode) int {
 		return http.StatusConflict
 	case CodeNotFound:
 		return http.StatusNotFound
+	case CodeMediaRejected:
+		return http.StatusUnsupportedMediaType
 	case CodeInvalidRequest:
 		return http.StatusBadRequest
 	case CodeInternal:

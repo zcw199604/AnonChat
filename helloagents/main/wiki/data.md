@@ -1,6 +1,7 @@
 # 数据模型与保留期
 
 > 以代码为准。表结构见 `backend/migrations/*.sql` 与 `backend/internal/store/models.go`。
+> 最后同步：AI 机器人 + 媒体库（202611062351）。
 
 ## 表结构
 
@@ -38,6 +39,24 @@
 - `story_works`：`id`、`story_id unique → stories`、`title`、`opening`、`tags`、`role_a`、`role_b`、`lines jsonb`（`[{role,text,ts}]`，不含任何身份字段）、`status(pending|approved|rejected|removed)`、`like_count`、`reviewed_by`、`reviewed_at`、`reject_reason`、`created_at`。
 - `story_work_likes`：PK `(work_id, identity_id)`、`created_at`。
 
+### AI 机器人（迁移 00005）
+- `character_cards`：`id`、`name`(1–40，只给模型看)、`description`、`personality`、`scenario`、`first_message`(为空时由模型生成开场)、`example_dialogue`、`system_prompt`、`created_at`、`updated_at`。
+- `bots`：`id`、`identity_id unique → identities`(bot 以匿名身份参与，对外与真人完全一致)、`label`(后台备注名 1–40)、`card_id → character_cards`(SET NULL)、`media_folder_id → media_folders`(SET NULL)、`enabled`、`model`(空=用 `LLM_MODEL`)、`temperature`(0–2)、`max_output_tokens`(16–4000)、`serve_match`、`serve_bottle`、`max_active_matches`(≥1)；
+  限额：`total_token_limit`、`total_reply_limit`、`window_seconds`(60–604800)、`window_token_limit`、`window_reply_limit`、`conv_reply_limit`、`conv_min_interval_seconds`、`conv_media_limit`（0 表示不限）；
+  节奏：`reply_delay_min_ms`、`reply_delay_max_ms`、`typing_ms_per_char`、`bottle_interval_seconds`(≥60)；
+  累计用量：`used_tokens`、`used_replies`（后台可重置）；`created_at`、`updated_at`。
+- `bot_usage`：`id bigserial`、`bot_id → bots`、`conversation_id uuid`（**不加外键**：会话清理后用量仍保留）、`prompt_tokens`、`completion_tokens`、`cached_tokens`、`replies`(0/1)、`created_at`。
+  token 用量 = `prompt_tokens + completion_tokens`；固定保留 30 天（`jobs`）。
+
+### Bot 全局设置（迁移 00006）
+- `bot_settings`：单行表（`id smallint pk CHECK (id=1)`）——`enabled`(全局开关)、`llm_base_url`、`llm_api_key_enc bytea`(AES-256-GCM(nonce||ciphertext)，NULL 表示未设置)、`llm_api_key_hint`(只存末 4 位)、`llm_api_key_base_url`(key 绑定保存时的 Base URL，地址变了该 key 不再使用)、`llm_model`、`llm_timeout_seconds`(5–300)、`llm_send_cache_key`、`match_fallback_seconds`(3–600)、`bottle_min_age_seconds`(0–604800)、`timezone`、`updated_by → admin_users`(SET NULL)、`updated_at`。
+  首次初始化：服务启动时若表为空，用环境变量写入一次；之后以数据库为准（后台可热切换，无需重启）。
+
+### 媒体库（迁移 00005）
+- `media_folders`：`id`、`name unique`(1–40)、`created_at`。
+- `media_items`：`id`、`folder_id → media_folders`(CASCADE)、`kind(image|video)`、`mime`、`size_bytes`、`storage_key unique`（相对 `MEDIA_ROOT` 的路径 `<folder_id>/<item_id><ext>`）、`original_name`、`tags text[]`(≤20 个，每个 ≤20 字)、`caption`(≤200，只给模型看)、`created_at`。
+- `messages.media_id`（V1 预留列）在迁移 00005 加上外键 `→ media_items(id) ON DELETE SET NULL`，因此删除媒体时历史消息的 `media_id` 会被置空（前端显示「媒体已失效」）。
+
 ### 管理后台
 - `admin_users`：`id`、`username unique`、`password_hash`(bcrypt cost12)、`totp_secret_enc`(V2)。
 - `admin_sessions`：PK `token_hash`、`admin_id`、`expires_at`、`created_at`。
@@ -57,6 +76,9 @@
 - `activation_codes_batch_idx ON activation_codes(batch_id)`
 - `stories_status_created_idx ON stories(status, created_at DESC)`、`stories_host_idx ON stories(host_identity_id)`
 - `story_works_status_created_idx ON story_works(status, created_at DESC)`
+- `media_items_folder_idx ON media_items(folder_id, created_at DESC)`
+- `messages_media_id_idx ON messages(media_id) WHERE media_id IS NOT NULL`
+- `bot_usage_bot_created_idx ON bot_usage(bot_id, created_at)`、`bot_usage_conv_idx ON bot_usage(conversation_id, created_at) WHERE conversation_id IS NOT NULL`
 
 ## 保留期（`jobs`，均可配置）
 
@@ -76,6 +98,8 @@
 | broadcasts | 展示结束 7 天后，或已驳回/下架 7 天后删除 | `MESSAGE_RETENTION` |
 | activation_codes | 已兑换的保留（财务凭证，不删除） | — |
 | story_works / story_work_likes | 不受 7 天留存约束（双方同意后生成的公开内容） | — |
+| bot_usage | 30 天 | 固定 |
+| character_cards / bots / media_folders / media_items / bot_settings | 不自动删除（运营数据，由后台手动删除/覆盖） | — |
 
 清理任务每 `RETENTION_INTERVAL`（默认 10m）执行，messages/reports 按每批 5000 行循环。
 
@@ -85,3 +109,5 @@
 2. `00002_burn_index.sql`：阅后即焚扫描的部分索引。
 3. `00003_seed_rooms.sql`：6 个官方房间（lobby/late-night/gaming/study/emotion/work）。
 4. `00004_profile_vip_story.sql`：身份资料与权益字段、`public_code` 回填与唯一索引、房间 `emoji`、`conversation_kind` 新增 `story`、公告、广播、激活码批次与激活码、故事与作品、举报 `target_type/target_id`。Down 迁移可完整回滚（含重建 `conversation_kind` 枚举）。
+5. `00005_bots.sql`：`character_cards`、`media_folders`、`media_items`、`bots`、`bot_usage`，以及 `messages.media_id` 外键与部分索引。Down 按相反顺序删除（先 `bot_usage`、`bots`，再删外键/索引，最后 `media_items`、`media_folders`、`character_cards`）。
+6. `00006_bot_settings.sql`：`bot_settings` 单行表（全局开关与模型接入配置，后台可热切换）。

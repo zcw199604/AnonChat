@@ -242,8 +242,8 @@ func (q *Queries) InsertMember(ctx context.Context, arg InsertMemberParams) (Con
 
 const insertMessage = `-- name: InsertMessage :one
 
-INSERT INTO messages (conversation_id, sender_identity_id, sender_member_id, client_msg_id, kind, body)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO messages (conversation_id, sender_identity_id, sender_member_id, client_msg_id, kind, body, media_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (sender_identity_id, client_msg_id) DO NOTHING
 RETURNING id, conversation_id, sender_identity_id, sender_member_id, client_msg_id, kind, body, media_id, read_at, burned_at, created_at
 `
@@ -255,6 +255,7 @@ type InsertMessageParams struct {
 	ClientMsgID      pgtype.UUID `json:"client_msg_id"`
 	Kind             string      `json:"kind"`
 	Body             string      `json:"body"`
+	MediaID          pgtype.UUID `json:"media_id"`
 }
 
 // ---- 消息 ----
@@ -266,6 +267,7 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (M
 		arg.ClientMsgID,
 		arg.Kind,
 		arg.Body,
+		arg.MediaID,
 	)
 	var i Message
 	err := row.Scan(

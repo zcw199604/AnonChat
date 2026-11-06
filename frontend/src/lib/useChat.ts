@@ -99,6 +99,7 @@ export function useChat(conversationId: string | null) {
         avatarSeed: m.avatarSeed,
         kind: m.kind,
         body: m.body,
+        mediaUrl: m.mediaUrl,
         createdAt: m.createdAt,
         burnAfterRead: m.burnAfterRead,
       })),

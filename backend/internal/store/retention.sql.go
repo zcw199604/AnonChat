@@ -122,6 +122,20 @@ func (q *Queries) DeleteOldAccessLogs(ctx context.Context, createdAt pgtype.Time
 	return result.RowsAffected(), nil
 }
 
+const deleteOldBotUsage = `-- name: DeleteOldBotUsage :execrows
+
+DELETE FROM bot_usage WHERE created_at < $1
+`
+
+// ---- Bot 用量（本包新增：固定保留 30 天，how.md §1）----
+func (q *Queries) DeleteOldBotUsage(ctx context.Context, createdAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldBotUsage, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteOldBottlePicks = `-- name: DeleteOldBottlePicks :execrows
 DELETE FROM bottle_picks WHERE picked_at < $1
 `

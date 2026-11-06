@@ -125,6 +125,8 @@ type PickedBottle struct {
 	ID        pgtype.UUID
 	Content   string
 	CreatedAt pgtype.Timestamptz
+	// PosterIdentityID 是投瓶人（HoldForBot 用于构造提示词里的对方资料）。
+	PosterIdentityID pgtype.UUID
 }
 
 // Pick 捞取一个瓶子；没有可捞的返回 empty_sea。
@@ -188,6 +190,60 @@ func (s *Service) Pick(ctx context.Context, identityID pgtype.UUID) (*PickedBott
 		return nil, err
 	}
 	return picked, nil
+}
+
+// HoldForBot 让 bot 捞一个“投出至少 minAge、还没有人回复过”的瓶子（how.md §9）。
+// 在一个事务里完成：选瓶子（FOR UPDATE SKIP LOCKED）→ 标记持有 → 记录捞取。
+// 没有可用的瓶子时返回 nil, nil。
+func (s *Service) HoldForBot(ctx context.Context, botIdentityID pgtype.UUID, minAge time.Duration) (*PickedBottle, error) {
+	if minAge < 0 {
+		minAge = 0
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+
+	now := s.now()
+	row, err := q.PickBottleForBot(ctx, store.PickBottleForBotParams{
+		Now:           pgtype.Timestamptz{Time: now, Valid: true},
+		CreatedBefore: pgtype.Timestamptz{Time: now.Add(-minAge), Valid: true},
+		BotIdentityID: botIdentityID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// 没有可捞的瓶子：保持事务干净地提交。
+			if cerr := tx.Commit(ctx); cerr != nil {
+				return nil, cerr
+			}
+			return nil, nil
+		}
+		return nil, err
+	}
+	if err := q.MarkBottleHeld(ctx, store.MarkBottleHeldParams{
+		HeldBy:    botIdentityID,
+		HeldUntil: pgtype.Timestamptz{Time: now.Add(s.hold), Valid: true},
+		ID:        row.ID,
+	}); err != nil {
+		return nil, err
+	}
+	if err := q.InsertBottlePick(ctx, store.InsertBottlePickParams{
+		BottleID:         row.ID,
+		PickerIdentityID: botIdentityID,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &PickedBottle{
+		ID:               row.ID,
+		Content:          row.Content,
+		CreatedAt:        row.CreatedAt,
+		PosterIdentityID: row.IdentityID,
+	}, nil
 }
 
 // ThrowBack 把当前持有的瓶子扔回海里。
@@ -264,6 +320,7 @@ func (s *Service) Reply(ctx context.Context, identityID, bottleID pgtype.UUID, c
 		ClientMsgID:      clientMsgID,
 		Kind:             "text",
 		Body:             filtered,
+		MediaID:          pgtype.UUID{}, // 文本消息没有媒体
 	}); err != nil {
 		return pgtype.UUID{}, err
 	}

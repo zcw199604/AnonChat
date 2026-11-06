@@ -1,7 +1,7 @@
 # 接口协议（REST + WebSocket）
 
 > 以代码为准。REST 路由见 `backend/internal/api/routes.go`（本文件的接口表与其逐条对应）；WS 类型见 `backend/internal/realtime/protocol.go`；错误码常量见 `backend/internal/platform/httpx/response.go`。
-> 最后同步：界面改版 + 资料与匹配偏好 + VIP 激活码 + 公告广播 + 故事书（202611062140）。
+> 最后同步：后台可配置 bot 开关与模型接入（202611062351 / B7）。
 
 ## 通用
 
@@ -42,6 +42,14 @@
 | POST | `/api/conversations/{id}/block` | 1v1 屏蔽对方并结束会话 |
 | POST | `/api/conversations/{id}/members/{memberId}/block` | 房间屏蔽成员 |
 | POST | `/api/reports` | 举报 `{conversationId,memberId,messageIds[],reason,note?}` → `{id}` |
+
+### 媒体文件（用户侧）
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/media/{id}` | 会话内消息引用过的媒体文件（`chatProtected`）。只有该媒体出现在请求者所属会话的**未焚毁**消息里才放行（已离开的成员也可访问）；不存在与无权限都返回 404。支持 Range（视频拖动），`Cache-Control: private, max-age=86400` |
+
+- `msg.new` 与历史消息在媒体消息上多一个可选字段 `mediaUrl`（`/api/media/<id>`，`omitempty`）：真人与 bot 消息的字段集合完全一致。
+- 前端：图片懒加载 + 点击查看原图，视频用 `<video controls preload="metadata" playsInline>`；缺失 `mediaUrl` 时显示「媒体已失效」。
 
 ### 聊天室
 | 方法 | 路径 | 说明 |
@@ -129,6 +137,22 @@
 | POST | `/api/admin/works/{id}/reject` | `{reason}` 驳回（写审计） |
 | POST | `/api/admin/works/{id}/remove` | 下架（写审计） |
 | GET | `/api/admin/identities/by-code/{code}` | 按匿名编号查身份：`identityId`、`publicCode`、`createdAt`、`vipActive`、`banned`、`activeBans`、摘要 |
+| GET/POST | `/api/admin/character-cards` | 角色卡列表 / 新建 `{name,description,personality,scenario,firstMessage,exampleDialogue,systemPrompt}` |
+| PUT/DELETE | `/api/admin/character-cards/{id}` | 更新 / 删除（绑定它的 bot `card_id` 置空） |
+| GET | `/api/admin/bots` | bot 列表：设置、对外资料（`profile`）、角色卡名/文件夹名、用量（totals 与窗口内 token/条数、缓存命中、进行中匹配数） |
+| POST | `/api/admin/bots` | 新建 `{label,nickname,cardId?,mediaFolderId?,enabled}`：身份与 bots 行同一事务创建 |
+| PUT | `/api/admin/bots/{id}` | 更新全部设置 + 对外资料（`profile` 用 `profile` 包校验后写入 identities） |
+| POST | `/api/admin/bots/{id}/reset-usage` | 清零 `used_tokens`/`used_replies` |
+| DELETE | `/api/admin/bots/{id}` | 先以 `peer_left` 结束进行中的匹配会话，再删 bots 行并吊销身份 |
+| GET/POST | `/api/admin/media-folders` | 文件夹列表（带 `itemCount`）/ 新建 `{name}` |
+| PATCH/DELETE | `/api/admin/media-folders/{id}` | 重命名 / 删除（级联删除媒体行与磁盘文件） |
+| GET | `/api/admin/media-folders/{id}/items` | 媒体列表 |
+| POST | `/api/admin/media-folders/{id}/items` | multipart：`files`（可多个）、`tags`（逗号分隔，应用到这批全部文件）、`caption` |
+| PATCH/DELETE | `/api/admin/media-items/{id}` | 改标签与描述 / 删除（行与磁盘文件） |
+| GET | `/api/admin/media-items/{id}/file` | 后台预览（支持 Range） |
+| GET | `/api/admin/bot-settings` | 全局设置：开关、Base URL、模型、超时、缓存 key、兜底时间、瓶龄、时区，以及 `apiKeySet`/`apiKeyHint`/`apiKeySource`/`apiKeyStale`、`secretStorageAvailable`、`ready`/`notReadyReason`（**不含 key**） |
+| PUT | `/api/admin/bot-settings` | 全量保存并立即生效（`engine.Invalidate()`）。`apiKey` 省略/为空表示保持不变，`clearApiKey` 清除；未配置 `SETTINGS_ENC_KEY` 时保存 key 返回 `invalid_request`；改 `baseUrl` 又没给新 key（且旧地址上有生效的 key）时返回 `invalid_request`「修改 Base URL 时需要重新填写 API Key」，带 `clearApiKey` 时允许；写审计（不含 key） |
+| POST | `/api/admin/bot-settings/test` | 测试连接：用已保存设置（请求体可临时覆盖 `baseUrl`/`model`/`apiKey`）发一次极短请求，返回 `{ok,latencyMs,model,error}`；每管理员每分钟最多 10 次；`error` 已截断且不含 key。**`baseUrl` 与已保存不同时必须同时带 `apiKey`，否则返回 ok=false 且不发请求**（key 与 Base URL 绑定，防止被引到别的地址） |
 
 ## WebSocket 协议
 
@@ -142,7 +166,8 @@
 - 客户端每 25 秒发 `ping`；服务端 60 秒收不到任何帧则断开；单帧 >16KB 断开（1009）；写缓冲满被视为慢客户端。
 - `msg.send`：服务端先回 `ack {messageId,createdAt}` 再广播 `msg.new`；重复 `clientMsgId` 幂等返回同一 `messageId` 且不重复广播。
 - `msg.new.message.nickname`：房间会话为真实昵称；故事会话为角色名；1v1 会话（match/bottle/private）为空字符串——前端在 1v1 场景改用匿名代号 `匿名·XXXX`（`sha256(conversationId+':'+memberId)` 前 4 位，见 `frontend/src/lib/codename.ts`）。
-- `match.found` 的负载：`{conversationId, peer:{memberId,gender,age,province,tags,cleanMode}}`（**不含** nickname 与 avatarSeed；gender 为 secret 时输出 null，province 仅在对方公开时输出）。
+- `match.found` 的负载：`{conversationId, peer:{memberId,gender,age,province,tags,cleanMode}}`（**不含** nickname 与 avatarSeed；gender 为 secret 时输出 null，province 仅在对方公开时输出）。bot 兜底配对时 `peer` 用同一函数按 bot 身份的公开资料构造，字段集合与真人完全相同。
+- `msg.new.message.mediaUrl`：媒体消息（`kind=image|video`）才有，值为 `/api/media/<id>`；文本消息不带该字段。
 - `match.waiting` 的负载：`{filters:{cleanMode,gender,sameProvince}}`，即服务端最终生效的条件。
 - `match.ended`/`conv.ended` 的 reason ∈ `peer_left|peer_skipped|destroyed|expired|blocked|ended`。
 - `kicked` 的 reason ∈ `banned|identity_reset`，发送后服务端关闭连接。
@@ -155,8 +180,18 @@ V1：`unauthorized`、`verification_required`、`banned`、`rate_limited`、`con
 
 本包新增：`vip_required`(403)、`invalid_code`(400)、`no_broadcast_card`(409)、`story_taken`(409)、`story_not_valid`(409)、`not_found`(404)。
 
-V2 预留：`muted`、`captcha_required`、`media_rejected`。
+本包新增：`media_rejected`(415，媒体类型或大小不被接受)。
+
+V2 预留：`muted`、`captcha_required`。
 
 ## 匹配兼容规则（`internal/match`）
 
 兼容判定双向满足：① 未互相拉黑、最近聊过不在放宽窗口内；② `clean_mode` 相同；③ VIP 且 `match_gender≠any` 时要求对方 `gender` 精确匹配（保密性别不满足任何筛选）；④ VIP 且 `match_same_province` 时要求双方都设置且省份相同；⑤ 非 VIP 的 `match_gender`/`match_same_province` 一律视为 any/false；⑥ 硬条件（②–④）不随时间放宽。候选人选择：标签交集最大优先，交集相同选排队最久。
+
+兜底（全局设置打开且配置可用时）：排队 `match_fallback_seconds` 后仍无真人配对时，向 bot 引擎要一个候选
+（条件：`enabled`、`serve_match`、绑定了角色卡、双向无屏蔽、`Compatible`、未触发 bot 级限额、
+进行中匹配数 < `max_active_matches`；优先不在「最近聊过」里的 bot，再随机）。候选查询在匹配 goroutine
+之外执行，认领通过命令在匹配 goroutine 内原子完成；pending 期间条目仍可与真人配对（真人优先），
+已被真人配走或用户取消时放弃认领，没有可用 bot 时清除 pending 并等下一个间隔再试。
+兜底时间是动态的：`BotProvider.FallbackAfter()` 只读引擎内存里的生效配置，匹配 goroutine 内不访问数据库；
+后台改完设置后立即按新值判断到期（到期时间 = max(enqueuedAt + after, 上次失败后的重试时间)）。

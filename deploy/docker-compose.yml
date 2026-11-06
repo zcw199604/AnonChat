@@ -31,11 +31,15 @@ services:
       DATABASE_URL: postgres://anonchat:${POSTGRES_PASSWORD:?必须设置 POSTGRES_PASSWORD}@postgres:5432/anonchat?sslmode=disable
       TRUSTED_PROXIES: "172.28.0.0/24"
       WORDLIST_PATH: /etc/anonchat/wordlist/words.txt
+      # 媒体文件根目录（挂载 media 卷）；启动时自动创建。
+      MEDIA_ROOT: /data/media
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ./wordlist:/etc/anonchat/wordlist:ro
+      # 媒体库（图片/视频）持久化：MEDIA_ROOT=/data/media 见 environment。
+      - media:/data/media
     healthcheck:
       test: ["CMD", "/server", "healthcheck"]
       interval: 30s
@@ -100,6 +104,8 @@ networks:
 
 volumes:
   pgdata:
+  # 媒体库文件（后台媒体库里上传的图片/视频）。
+  media:
   caddy_data:
   caddy_config:
   backups:

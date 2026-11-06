@@ -38,6 +38,8 @@ type messageResponse struct {
 	Body          string `json:"body"`
 	CreatedAt     string `json:"createdAt"`
 	BurnAfterRead bool   `json:"burnAfterRead"`
+	// MediaURL 是媒体消息的访问地址，仅媒体消息携带（how.md 3.2）。
+	MediaURL string `json:"mediaUrl,omitempty"`
 }
 
 // ListConversationsHandler 处理 GET /api/conversations?kind=。
@@ -139,7 +141,7 @@ func (s *Service) fetchMessages(r *http.Request, convID, requester pgtype.UUID, 
 		}
 		out := make([]messageResponse, 0, len(rows))
 		for _, row := range rows {
-			out = append(out, toMessageResponse(row.ID, row.SenderMemberID, row.Nickname, row.AvatarSeed, row.Kind, row.Body, row.CreatedAt))
+			out = append(out, toMessageResponse(row.ID, row.SenderMemberID, row.Nickname, row.AvatarSeed, row.Kind, row.Body, row.CreatedAt, row.MediaID))
 		}
 		return out, nil
 	}
@@ -159,7 +161,7 @@ func (s *Service) fetchMessages(r *http.Request, convID, requester pgtype.UUID, 
 	}
 	out := make([]messageResponse, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, toMessageResponse(row.ID, row.SenderMemberID, row.Nickname, row.AvatarSeed, row.Kind, row.Body, row.CreatedAt))
+		out = append(out, toMessageResponse(row.ID, row.SenderMemberID, row.Nickname, row.AvatarSeed, row.Kind, row.Body, row.CreatedAt, row.MediaID))
 	}
 	// DESC 结果反转为升序。
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
@@ -167,7 +169,7 @@ func (s *Service) fetchMessages(r *http.Request, convID, requester pgtype.UUID, 
 }
 
 // toMessageResponse 构造消息响应。
-func toMessageResponse(id int64, memberID int32, nickname, avatarSeed, kind, body string, createdAt pgtype.Timestamptz) messageResponse {
+func toMessageResponse(id int64, memberID int32, nickname, avatarSeed, kind, body string, createdAt pgtype.Timestamptz, mediaID pgtype.UUID) messageResponse {
 	return messageResponse{
 		ID:         id,
 		MemberID:   memberID,
@@ -176,6 +178,7 @@ func toMessageResponse(id int64, memberID int32, nickname, avatarSeed, kind, bod
 		Kind:       kind,
 		Body:       body,
 		CreatedAt:  formatTS(createdAt),
+		MediaURL:   mediaURL(mediaID),
 	}
 }
 

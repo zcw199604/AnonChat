@@ -382,3 +382,199 @@ func TestLoadRateLimitMultiplier(t *testing.T) {
 		t.Fatal("生产环境 multiplier!=1 应报错")
 	}
 }
+
+// botEnvDefaults 清空 AI 机器人与媒体相关的环境变量，保证默认值用例不受调用方环境影响。
+func botEnvDefaults(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{
+		"BOT_ENABLED", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "LLM_TIMEOUT",
+		"LLM_SEND_CACHE_KEY", "BOT_MATCH_FALLBACK_AFTER", "BOT_BOTTLE_MIN_AGE",
+		"MEDIA_ROOT", "MEDIA_MAX_UPLOAD_MB", "BOT_TIMEZONE",
+	} {
+		unsetEnv(t, k)
+	}
+}
+
+// TestLoadBotDefaults 验证 bot 与媒体配置的默认值。
+func TestLoadBotDefaults(t *testing.T) {
+	setEnv(t, validEnv())
+	botEnvDefaults(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("默认值应通过校验: %v", err)
+	}
+	if cfg.BotEnabled {
+		t.Error("BotEnabled 默认应为 false")
+	}
+	if cfg.LLMBaseURL != "https://api.openai.com/v1" {
+		t.Errorf("LLMBaseURL = %q, 期望 https://api.openai.com/v1", cfg.LLMBaseURL)
+	}
+	if cfg.LLMTimeout != 60*time.Second {
+		t.Errorf("LLMTimeout = %v, 期望 60s", cfg.LLMTimeout)
+	}
+	if !cfg.LLMSendCacheKey {
+		t.Error("LLMSendCacheKey 默认应为 true")
+	}
+	if cfg.BotMatchFallbackAfter != 10*time.Second {
+		t.Errorf("BotMatchFallbackAfter = %v, 期望 10s", cfg.BotMatchFallbackAfter)
+	}
+	if cfg.BotBottleMinAge != 30*time.Minute {
+		t.Errorf("BotBottleMinAge = %v, 期望 30m", cfg.BotBottleMinAge)
+	}
+	if cfg.MediaRoot != "./data/media" {
+		t.Errorf("MediaRoot = %q, 期望 ./data/media", cfg.MediaRoot)
+	}
+	if cfg.MediaMaxUploadMB != 100 {
+		t.Errorf("MediaMaxUploadMB = %d, 期望 100", cfg.MediaMaxUploadMB)
+	}
+	if cfg.BotTimezone != "Asia/Shanghai" {
+		t.Errorf("BotTimezone = %q, 期望 Asia/Shanghai", cfg.BotTimezone)
+	}
+}
+
+// TestLoadBotEnabledDoesNotRequireLLM 验证 BOT_ENABLED=true 时不再强制要求 key 或 model。
+// how.md §15 起，模型接入配置可以在管理后台补填（bot_settings），因此启动校验只要求
+// LLM_BASE_URL 非空；key 与 model 留空是允许的。
+func TestLoadBotEnabledDoesNotRequireLLM(t *testing.T) {
+	setEnv(t, validEnv())
+	botEnvDefaults(t)
+	setEnv(t, map[string]string{"BOT_ENABLED": "true"})
+	unsetEnv(t, "LLM_API_KEY")
+	unsetEnv(t, "LLM_MODEL")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("BOT_ENABLED=true 且未配置 key/model 时应允许启动（后台可补填）: %v", err)
+	}
+	if !cfg.BotEnabled || cfg.LLMAPIKey != "" || cfg.LLMModel != "" {
+		t.Errorf("bot 配置解析错误: enabled=%v key=%q model=%q", cfg.BotEnabled, cfg.LLMAPIKey, cfg.LLMModel)
+	}
+
+	// 给了 key/model 时应正确解析（用于首次初始化与 key 回退）。
+	setEnv(t, map[string]string{"LLM_API_KEY": "sk-test", "LLM_MODEL": "deepseek-chat"})
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("配置齐备时不应报错: %v", err)
+	}
+	if cfg.LLMAPIKey != "sk-test" || cfg.LLMModel != "deepseek-chat" {
+		t.Errorf("LLM 配置解析错误: key=%q model=%q", cfg.LLMAPIKey, cfg.LLMModel)
+	}
+
+	// LLM_BASE_URL 有默认值，留空即用默认地址。
+	unsetEnv(t, "LLM_BASE_URL")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("LLM_BASE_URL 留空应使用默认值: %v", err)
+	}
+	if cfg.LLMBaseURL != "https://api.openai.com/v1" {
+		t.Errorf("LLMBaseURL = %q", cfg.LLMBaseURL)
+	}
+}
+
+// TestLoadSettingsEncKey 验证 SETTINGS_ENC_KEY 的长度校验。
+func TestLoadSettingsEncKey(t *testing.T) {
+	setEnv(t, validEnv())
+	botEnvDefaults(t)
+
+	// 未配置：允许（后台不能保存 API Key，生产只打 warn）。
+	unsetEnv(t, "SETTINGS_ENC_KEY")
+	if _, err := Load(); err != nil {
+		t.Fatalf("未配置 SETTINGS_ENC_KEY 不应报错: %v", err)
+	}
+	// 32 字节：通过并解码。
+	setEnv(t, map[string]string{"SETTINGS_ENC_KEY": b64(32)})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("32 字节 SETTINGS_ENC_KEY 应通过: %v", err)
+	}
+	if len(cfg.SettingsEncKey) != 32 {
+		t.Errorf("SettingsEncKey 长度 = %d, 期望 32", len(cfg.SettingsEncKey))
+	}
+	// 长度不对：报错。
+	setEnv(t, map[string]string{"SETTINGS_ENC_KEY": b64(16)})
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SETTINGS_ENC_KEY") {
+		t.Fatalf("SETTINGS_ENC_KEY 非 32 字节应报错, 实际: %v", err)
+	}
+}
+
+// TestLoadBotInvalidValues 验证新增配置项的非法取值。
+func TestLoadBotInvalidValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantSub string
+	}{
+		{name: "非法 BOT_ENABLED", env: map[string]string{"BOT_ENABLED": "yes please"}, wantSub: "BOT_ENABLED"},
+		{name: "非法 LLM_SEND_CACHE_KEY", env: map[string]string{"LLM_SEND_CACHE_KEY": "maybe"}, wantSub: "LLM_SEND_CACHE_KEY"},
+		{name: "非法 LLM_TIMEOUT", env: map[string]string{"LLM_TIMEOUT": "0"}, wantSub: "LLM_TIMEOUT"},
+		{name: "非法 BOT_MATCH_FALLBACK_AFTER", env: map[string]string{"BOT_MATCH_FALLBACK_AFTER": "-1s"}, wantSub: "BOT_MATCH_FALLBACK_AFTER"},
+		{name: "非法 BOT_BOTTLE_MIN_AGE", env: map[string]string{"BOT_BOTTLE_MIN_AGE": "-30m"}, wantSub: "BOT_BOTTLE_MIN_AGE"},
+		{name: "非法 MEDIA_MAX_UPLOAD_MB", env: map[string]string{"MEDIA_MAX_UPLOAD_MB": "0"}, wantSub: "MEDIA_MAX_UPLOAD_MB"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setEnv(t, validEnv())
+			botEnvDefaults(t)
+			setEnv(t, tt.env)
+			_, err := Load()
+			if err == nil {
+				t.Fatal("期望返回错误，实际为 nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("错误信息 %q 未包含 %q", err.Error(), tt.wantSub)
+			}
+		})
+	}
+
+	// 瓶子的最小年龄允许为 0（测试里立刻让 bot 捞瓶子）。
+	setEnv(t, validEnv())
+	botEnvDefaults(t)
+	setEnv(t, map[string]string{"BOT_BOTTLE_MIN_AGE": "0"})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("BOT_BOTTLE_MIN_AGE=0 应通过: %v", err)
+	}
+	if cfg.BotBottleMinAge != 0 {
+		t.Errorf("BotBottleMinAge = %v, 期望 0", cfg.BotBottleMinAge)
+	}
+}
+
+// TestGetBool 直接验证 getBool 的解析行为。
+func TestGetBool(t *testing.T) {
+	tests := []struct {
+		raw     string
+		def     bool
+		want    bool
+		wantErr bool
+	}{
+		{raw: "", def: true, want: true},
+		{raw: "", def: false, want: false},
+		{raw: "true", def: false, want: true},
+		{raw: "1", def: false, want: true},
+		{raw: "false", def: true, want: false},
+		{raw: "0", def: true, want: false},
+		{raw: "not-bool", def: true, wantErr: true},
+	}
+	for _, tt := range tests {
+		unsetEnv(t, "BOT_TEST_BOOL")
+		if tt.raw != "" {
+			setEnv(t, map[string]string{"BOT_TEST_BOOL": tt.raw})
+		}
+		got, err := getBool("BOT_TEST_BOOL", tt.def)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("raw=%q 期望报错，实际 err=nil", tt.raw)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("raw=%q 不应报错: %v", tt.raw, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("raw=%q getBool = %v, 期望 %v", tt.raw, got, tt.want)
+		}
+	}
+}

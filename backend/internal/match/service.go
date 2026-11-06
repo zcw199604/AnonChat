@@ -57,6 +57,8 @@ type Service struct {
 	matcher *memoryMatcher
 	grace   time.Duration
 	now     func() time.Time
+	// botProvider 是排队兜底的 bot 提供者（BOT_ENABLED 时由装配注入，可为 nil）。
+	botProvider BotProvider
 
 	mu          sync.Mutex
 	graceTimers map[pgtype.UUID]*time.Timer
@@ -107,6 +109,16 @@ func New(pool *pgxpool.Pool, logger *slog.Logger, convSvc *conversation.Service,
 		o(s)
 	}
 	return s
+}
+
+// SetBotFallback 注册排队兜底的 provider（how.md §8、§15.2）。
+// 兜底时间由 p.FallbackAfter() 动态提供（后台可热切换），必须在 Run 之前调用。
+func (s *Service) SetBotFallback(p BotProvider) {
+	if p == nil {
+		return
+	}
+	s.botProvider = p
+	s.matcher.setBotFallback(p, s.onBotPair, s.logger)
 }
 
 // Run 启动匹配 goroutine，直到 ctx 取消。
@@ -206,6 +218,48 @@ func (s *Service) onPair(ae, be *queueEntry) error {
 	// members[0] 是 a，members[1] 是 b。
 	s.sendFound(a.ID, conv.ID, members[1].MemberID, be.ic.Profile)
 	s.sendFound(b.ID, conv.ID, members[0].MemberID, ae.ic.Profile)
+	return nil
+}
+
+// onBotPair 在匹配 goroutine 之外执行：与 onPair 相同的建会话、订阅与推送流程，
+// 只是对方是 bot——peer 用 bot 身份的公开资料，构造方式与真人配对完全一致（how.md §8）。
+func (s *Service) onBotPair(entry *queueEntry, cand *BotCandidate) error {
+	if cand == nil || cand.Identity == nil {
+		return errInvalidPair
+	}
+	user := entry.ident
+	botIdent := cand.Identity
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.logger.Error("匹配兜底：开启事务失败", "error", err)
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	conv, members, err := s.convSvc.Create(ctx, tx, store.ConversationKindMatch, false, user.ID, botIdent.ID)
+	if err != nil {
+		s.logger.Error("匹配兜底：创建会话失败", "error", err)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.logger.Error("匹配兜底：提交事务失败", "error", err)
+		return err
+	}
+	if len(members) != 2 {
+		s.logger.Error("匹配兜底：成员数异常", "count", len(members))
+		return errInvalidPair
+	}
+
+	s.hub.SubscribeIdentity(user.ID, conv.ID)
+	s.hub.SubscribeIdentity(botIdent.ID, conv.ID)
+
+	// 用户收到的 match.found：peer 字段由 bot 身份的公开资料按同一规则构造。
+	s.sendFound(user.ID, conv.ID, members[1].MemberID, cand.Profile)
+	if s.botProvider != nil {
+		s.botProvider.BotMatched(conv.ID, botIdent.ID)
+	}
 	return nil
 }
 
