@@ -34,6 +34,7 @@ type settingsResponse struct {
 	FallbackSeconds  int32  `json:"matchFallbackSeconds"`
 	BottleMinAgeSecs int32  `json:"bottleMinAgeSeconds"`
 	Timezone         string `json:"timezone"`
+	PersonaMode      string `json:"personaMode"`
 	// APIKeySet / APIKeyHint / APIKeySource 只暴露"是否设置""末 4 位""来源"。
 	APIKeySet  bool   `json:"apiKeySet"`
 	APIKeyHint string `json:"apiKeyHint"`
@@ -57,6 +58,7 @@ func toSettingsResponse(s Settings, encAvailable bool) settingsResponse {
 		FallbackSeconds:  int32(s.MatchFallbackAfter / time.Second),
 		BottleMinAgeSecs: int32(s.BottleMinAge / time.Second),
 		Timezone:         s.Timezone,
+		PersonaMode:      s.PersonaMode,
 		APIKeySet:        s.APIKeySet,
 		APIKeyHint:       s.APIKeyHint,
 		APIKeySrc:        s.APIKeySource,
@@ -81,6 +83,8 @@ type settingsRequest struct {
 	FallbackSeconds     int32  `json:"matchFallbackSeconds"`
 	BottleMinAgeSeconds int32  `json:"bottleMinAgeSeconds"`
 	Timezone            string `json:"timezone"`
+	// PersonaMode 为空表示保持当前值（user | system）。
+	PersonaMode string `json:"personaMode"`
 }
 
 // GetSettingsHandler 处理 GET /api/admin/bot-settings。
@@ -114,6 +118,7 @@ func (h *Handler) UpdateSettingsHandler(w http.ResponseWriter, r *http.Request) 
 		MatchFallbackSeconds: req.FallbackSeconds,
 		BottleMinAgeSeconds:  req.BottleMinAgeSeconds,
 		Timezone:             req.Timezone,
+		PersonaMode:          req.PersonaMode,
 		APIKey:               req.APIKey,
 		ClearAPIKey:          req.ClearAPIKey,
 	}, adminID)

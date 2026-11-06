@@ -684,6 +684,7 @@ func (e *Engine) runTurn(convID pgtype.UUID, opening bool) {
 		e.logger.Warn("bot 调用模型失败", "bot_id", bot.ID.String(), "error", err)
 		return
 	}
+	warnEmptyOutput(e.logger, bot, res)
 	replied := false
 	for _, bubble := range ParseReply(res.Content) {
 		if e.sendBubble(ctx, turn, bubble) {
@@ -766,6 +767,8 @@ func (e *Engine) buildPromptInput(ctx context.Context, turn *turnContext, card *
 		Kind:      turn.conv.Kind,
 		Now:       e.now(),
 		Loc:       e.Settings().Location,
+		// 人设注入方式来自全局设置（部分网关会丢弃 system 消息）。
+		PersonaMode: e.Settings().PersonaMode,
 	}
 	if card != nil {
 		in.Card = CardFromStore(*card)
@@ -1010,4 +1013,19 @@ func genUUID() (pgtype.UUID, error) {
 		return pgtype.UUID{}, err
 	}
 	return pgtype.UUID{Bytes: b, Valid: true}, nil
+}
+
+// warnEmptyOutput 在模型正文为空时记录原因：思考型模型可能把输出额度全部用在推理上
+// （finish_reason=length），此时应在后台调大该 bot 的"输出 token 上限"。不记录任何正文。
+func warnEmptyOutput(logger *slog.Logger, bot store.Bot, res ChatResult) {
+	if strings.TrimSpace(res.Content) != "" {
+		return
+	}
+	if res.FinishReason == "length" {
+		logger.Warn("bot 模型输出为空：输出 token 上限被用完（思考型模型请调大输出上限）",
+			"bot_id", bot.ID.String(), "max_output_tokens", bot.MaxOutputTokens,
+			"completion_tokens", res.CompletionTokens)
+		return
+	}
+	logger.Info("bot 模型输出为空", "bot_id", bot.ID.String(), "finish_reason", res.FinishReason)
 }

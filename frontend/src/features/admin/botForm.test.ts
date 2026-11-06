@@ -186,6 +186,7 @@ function sampleSettings(): BotSettings {
     matchFallbackSeconds: 10,
     bottleMinAgeSeconds: 1800,
     timezone: 'Asia/Shanghai',
+    personaMode: 'user',
     apiKeySet: true,
     apiKeyHint: '••••abcd',
     apiKeySource: 'db',
@@ -215,6 +216,14 @@ describe('settingsForm', () => {
     expect(input.timeoutSeconds).toBe(30)
     expect('apiKey' in input).toBe(false)
     expect(input.clearApiKey).toBeUndefined()
+  })
+
+  it('人设注入方式在表单与负载之间往返，未知值回退为 user', () => {
+    const sys = settingsToForm({ ...sampleSettings(), personaMode: 'system' })
+    expect(sys.personaMode).toBe('system')
+    expect(formToSettingsInput(sys).personaMode).toBe('system')
+    const weird = settingsToForm({ ...sampleSettings(), personaMode: 'x' as never })
+    expect(weird.personaMode).toBe('user')
   })
 
   it('formToSettingsInput 在填写新 key 或清除时带上对应字段', () => {

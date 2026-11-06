@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/anonchat/anonchat/backend/internal/admin"
+	"github.com/anonchat/anonchat/backend/internal/bot"
 	"github.com/anonchat/anonchat/backend/internal/conversation"
 	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/realtime"
@@ -162,18 +163,31 @@ func TestMatchFallbackEndToEnd(t *testing.T) {
 	}
 	_ = notMember.Body.Close()
 
-	// 前缀稳定：所有调用（开场 + 回复）的第 1 条 system 逐字节相同。
+	// 默认是 user 注入方式（兼容会丢弃 system 的网关）：不发送任何 system 消息，
+	// 角色设定块（到"【设定结束】"为止）在所有调用（开场 + 回复）里逐字节相同，保证缓存前缀稳定。
 	calls := llm.snapshot()
 	if len(calls) < 2 {
 		t.Fatalf("假 LLM 应至少被调用 2 次（开场 + 回复），实际 %d 次", len(calls))
 	}
-	first := calls[0].Messages[0]
-	if first.Role != "system" {
-		t.Fatalf("第 1 条消息应为 system: %+v", first)
+	setupOf := func(m bot.ChatMessage) string {
+		i := strings.Index(m.Content, "【设定结束】")
+		if m.Role != "user" || i < 0 {
+			t.Fatalf("第 1 条消息应为包含角色设定块的 user 消息: %+v", m)
+		}
+		return m.Content[:i]
 	}
-	for i, call := range calls[1:] {
-		if call.Messages[0].Content != first.Content {
-			t.Fatalf("第 %d 次调用的第 1 条 system 与首次不一致:\n%s\n%s", i+2, first.Content, call.Messages[0].Content)
+	firstSetup := setupOf(calls[0].Messages[0])
+	if !strings.Contains(firstSetup, "角色名：") {
+		t.Fatalf("角色设定块缺少角色名:\n%s", firstSetup)
+	}
+	for i, call := range calls {
+		for _, m := range call.Messages {
+			if m.Role == "system" {
+				t.Fatalf("第 %d 次调用不应包含 system 消息: %+v", i+1, m)
+			}
+		}
+		if got := setupOf(call.Messages[0]); got != firstSetup {
+			t.Fatalf("第 %d 次调用的角色设定块与首次不一致:\n%s\n%s", i+1, firstSetup, got)
 		}
 	}
 	// 用量落库：bot_usage 有记录且累加了 used_tokens。

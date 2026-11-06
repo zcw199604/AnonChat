@@ -3,7 +3,7 @@
  * 字段名严格对应后端 `internal/bot/handlers.go` 的 JSON。
  */
 import type { Gender } from '../../lib/api/client'
-import type { AdminBot, AdminBotCreate, AdminBotUpdate, BotSettings, BotSettingsInput } from './botApi'
+import type { AdminBot, AdminBotCreate, AdminBotUpdate, BotSettings, BotSettingsInput, PersonaMode } from './botApi'
 import { MAX_AGE, MIN_AGE, PROVINCES, TAGS } from '../../lib/profileConsts'
 
 /** 性别选项（与资料页 ProfileCard 保持一致）。 */
@@ -215,6 +215,7 @@ export interface SettingsFormState {
   fallbackSeconds: string
   bottleMinAgeMinutes: string
   timezone: string
+  personaMode: PersonaMode
 }
 
 /** settingsToForm 把接口返回的全局设置转成表单（apiKey 永远留空，表示不修改）。 */
@@ -229,6 +230,7 @@ export function settingsToForm(s: BotSettings): SettingsFormState {
     fallbackSeconds: String(s.matchFallbackSeconds),
     bottleMinAgeMinutes: String(Math.round(s.bottleMinAgeSeconds / 60)),
     timezone: s.timezone,
+    personaMode: s.personaMode === 'system' ? 'system' : 'user',
   }
 }
 
@@ -243,6 +245,7 @@ export function formToSettingsInput(form: SettingsFormState, clearApiKey = false
     matchFallbackSeconds: num(form.fallbackSeconds),
     bottleMinAgeSeconds: num(form.bottleMinAgeMinutes) * 60,
     timezone: form.timezone.trim(),
+    personaMode: form.personaMode,
   }
   const key = form.apiKey.trim()
   if (key !== '') input.apiKey = key

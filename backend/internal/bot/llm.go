@@ -37,6 +37,8 @@ type ChatResult struct {
 	CompletionTokens int
 	// CachedTokens 是 prompt 中命中前缀缓存的部分。
 	CachedTokens int
+	// FinishReason 是结束原因（stop / length 等）；length 表示输出额度用完。
+	FinishReason string
 }
 
 // LLM 是模型客户端接口（集成测试可注入假实现）。
@@ -123,6 +125,7 @@ type chatResponsePayload struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -228,6 +231,7 @@ func (c *OpenAIClient) do(ctx context.Context, body []byte) (ChatResult, *time.D
 	}
 	return ChatResult{
 		Content:          out.Choices[0].Message.Content,
+		FinishReason:     out.Choices[0].FinishReason,
 		PromptTokens:     out.Usage.PromptTokens,
 		CompletionTokens: out.Usage.CompletionTokens,
 		CachedTokens:     cached,

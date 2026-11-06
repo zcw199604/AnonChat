@@ -136,3 +136,5 @@ docker compose exec -it backend /server admin create --username admin
 
 > 注意：当前仓库仅实现 `console` 短信提供方（仅开发用），生产环境禁止 `console`；接入真实服务商前，
 > 生产环境无法完成启动（配置校验会拒绝 console）。这属于任务 5.x / 12.3 的 HITL 事项。
+
+> **bot 不认角色卡、自称"AI 助手"时**：说明模型网关丢弃了 system 消息。在后台"全局设置"里把"人设注入方式"设为 `user`（默认值就是 user）。如果用的是思考型模型（例如 deepseek-flash），请在 bot 设置里把"输出 token 上限"调到 1000 左右，否则推理过程可能把额度用完，导致没有回复。

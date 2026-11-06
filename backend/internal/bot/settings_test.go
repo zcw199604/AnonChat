@@ -225,3 +225,26 @@ func TestClampSettings(t *testing.T) {
 		t.Errorf("负数时长应变 0: %v", got)
 	}
 }
+
+// TestUpdateInputPersonaMode 验证人设注入方式的校验：空值（保持当前）、user、system 合法，其余非法。
+func TestUpdateInputPersonaMode(t *testing.T) {
+	base := UpdateInput{TimeoutSeconds: 60, MatchFallbackSeconds: 10, BottleMinAgeSeconds: 0, Timezone: "Asia/Shanghai"}
+	for _, m := range []string{"", PersonaModeUser, PersonaModeSystem} {
+		in := base
+		in.PersonaMode = m
+		if err := in.Validate(); err != nil {
+			t.Errorf("PersonaMode=%q 应合法: %v", m, err)
+		}
+	}
+	in := base
+	in.PersonaMode = "assistant"
+	if err := in.Validate(); err == nil {
+		t.Error("PersonaMode=assistant 应被拒绝")
+	}
+	if got := normalizePersonaMode("system"); got != PersonaModeSystem {
+		t.Errorf("normalizePersonaMode(system)=%q", got)
+	}
+	if got := normalizePersonaMode("weird"); got != PersonaModeUser {
+		t.Errorf("未知值应回退为 user，得到 %q", got)
+	}
+}

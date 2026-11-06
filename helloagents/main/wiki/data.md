@@ -111,3 +111,5 @@
 4. `00004_profile_vip_story.sql`：身份资料与权益字段、`public_code` 回填与唯一索引、房间 `emoji`、`conversation_kind` 新增 `story`、公告、广播、激活码批次与激活码、故事与作品、举报 `target_type/target_id`。Down 迁移可完整回滚（含重建 `conversation_kind` 枚举）。
 5. `00005_bots.sql`：`character_cards`、`media_folders`、`media_items`、`bots`、`bot_usage`，以及 `messages.media_id` 外键与部分索引。Down 按相反顺序删除（先 `bot_usage`、`bots`，再删外键/索引，最后 `media_items`、`media_folders`、`character_cards`）。
 6. `00006_bot_settings.sql`：`bot_settings` 单行表（全局开关与模型接入配置，后台可热切换）。
+
+- `bot_settings.persona_mode`（迁移 00007）：人设注入方式 `user`（默认，角色设定放进第一条 user 消息，兼容会丢弃 system 的中转网关）或 `system`；`bots.max_output_tokens` 默认值改为 1024（思考型模型需要更大的输出额度）。

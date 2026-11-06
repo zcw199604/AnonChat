@@ -140,6 +140,7 @@ func (e *Engine) bottleReply(ctx context.Context, entry *botEntry, picked *bottl
 		Now:         e.now(),
 		Loc:         e.Settings().Location,
 		Instruction: InstructionBottle,
+		PersonaMode: e.Settings().PersonaMode,
 	}
 	// 投瓶人的公开资料（与真人配对时使用的规则一致）。
 	if picked.PosterIdentityID.Valid {
@@ -169,6 +170,7 @@ func (e *Engine) bottleReply(ctx context.Context, entry *botEntry, picked *bottl
 		e.logger.Warn("bot 生成漂流瓶回复失败", "bot_id", entry.bot.ID.String(), "error", err)
 		return "", ChatResult{}, false
 	}
+	warnEmptyOutput(e.logger, entry.bot, res)
 	// 只取文本气泡。
 	lines := make([]string, 0, maxBubbles)
 	for _, b := range ParseReply(res.Content) {

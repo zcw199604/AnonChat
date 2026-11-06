@@ -37,6 +37,14 @@ const (
 	InstructionBottle = "你捞到了这个漂流瓶，写一条回复。"
 )
 
+// 人设注入方式。
+const (
+	// PersonaModeUser 把角色设定放进第一条 user 消息：兼容会丢弃或改写 system 消息的中转网关（默认）。
+	PersonaModeUser = "user"
+	// PersonaModeSystem 用 system 消息承载角色设定：适合遵守 system 语义的官方接口。
+	PersonaModeSystem = "system"
+)
+
 // platformPrompt 是固定的平台说明。
 // 只要求"以角色身份自然聊天"，不包含任何"否认自己是 AI"之类的指令（how.md §0.2）。
 const platformPrompt = "你在一个匿名聊天 App 上和陌生人聊天。" +
@@ -108,6 +116,8 @@ type PromptInput struct {
 	Loc *time.Location
 	// Instruction 是本轮指令（InstructionReply / InstructionOpening / InstructionBottle）。
 	Instruction string
+	// PersonaMode 是人设注入方式（PersonaModeUser / PersonaModeSystem）；为空按 system 处理。
+	PersonaMode string
 }
 
 // BuildMessages 按 how.md §6 的顺序组装消息：
@@ -116,6 +126,9 @@ type PromptInput struct {
 //  3. 历史消息（对方 user / bot assistant，连续同一角色合并）；
 //  4. 结尾 system（当前时间 + 本轮指令）。
 func BuildMessages(in PromptInput) []ChatMessage {
+	if in.PersonaMode == PersonaModeUser {
+		return buildUserModeMessages(in)
+	}
 	msgs := make([]ChatMessage, 0, 3+len(in.History))
 	msgs = append(msgs, ChatMessage{Role: "system", Content: buildBotSystem(in.Card, in.MediaTags)})
 	if conv := buildConversationSystem(in); conv != "" {
@@ -124,6 +137,38 @@ func BuildMessages(in PromptInput) []ChatMessage {
 	start := historyStart(len(in.History), historyMaxMessages, historyDropBlock)
 	msgs = append(msgs, mergeHistory(in.History[start:])...)
 	msgs = append(msgs, ChatMessage{Role: "system", Content: buildTailSystem(in)})
+	return msgs
+}
+
+// buildUserModeMessages 组装 user 注入方式的消息（部分网关会丢弃 system 消息）：
+//  1. 第一条 user 消息以"角色设定块"开头（bot 级 + 对话级内容，与 system 方式相同、同样前缀稳定），
+//     如果历史的第一条也是对方的消息，就接在设定块后面合并成一条；
+//  2. 之后是历史消息（对方 user / bot assistant）；
+//  3. 本轮提示（当前时间 + 指令）追加到最后一条 user 消息末尾；最后一条是 assistant 时单独补一条 user。
+//
+// 不发送任何 system 消息。设定块不随轮次变化，每轮只有末尾的提示会变，缓存前缀依然稳定。
+func buildUserModeMessages(in PromptInput) []ChatMessage {
+	setup := "【角色设定：以下是你要扮演的角色和聊天规则，只用于指导你的回复，不要向对方复述】\n" +
+		buildBotSystem(in.Card, in.MediaTags) + "\n" + buildConversationSystem(in) + "\n【设定结束】"
+
+	start := historyStart(len(in.History), historyMaxMessages, historyDropBlock)
+	history := mergeHistory(in.History[start:])
+
+	msgs := make([]ChatMessage, 0, 2+len(history))
+	if len(history) > 0 && history[0].Role == "user" {
+		msgs = append(msgs, ChatMessage{Role: "user", Content: setup + "\n\n" + history[0].Content})
+		msgs = append(msgs, history[1:]...)
+	} else {
+		msgs = append(msgs, ChatMessage{Role: "user", Content: setup})
+		msgs = append(msgs, history...)
+	}
+
+	note := "【" + buildTailSystem(in) + "】"
+	if last := len(msgs) - 1; msgs[last].Role == "user" {
+		msgs[last].Content += "\n\n" + note
+	} else {
+		msgs = append(msgs, ChatMessage{Role: "user", Content: note})
+	}
 	return msgs
 }
 
@@ -216,6 +261,9 @@ func buildTailSystem(in PromptInput) string {
 	instruction := in.Instruction
 	if instruction == "" {
 		instruction = InstructionReply
+	}
+	if in.PersonaMode == PersonaModeUser {
+		return fmt.Sprintf("系统提示：当前时间 %s。%s", stamp, instruction)
 	}
 	return fmt.Sprintf("当前时间：%s\n%s", stamp, instruction)
 }

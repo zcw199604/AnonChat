@@ -505,3 +505,22 @@ CREATE TABLE bot_settings (
 - `SETTINGS_ENC_KEY` 的作用和生成方法（`openssl rand -base64 32`）；
 - 环境变量只用于首次初始化，之后以后台设置为准；
 - API Key 的优先级。
+
+## 16. 修正（2026-11-07 线上问题）：人设注入方式
+
+**现象**：线上 bot 不认角色卡，自称"DeepSeek AI 助手"；匹配后的开场一直没有发出来。
+
+**原因**：
+- 中转网关（`api.zcw.work`）会丢弃开头那条 system 消息。线上开场请求的 prompt 只有 54 个 token，正好是"对话级 system + 结尾 system"两段的长度，承载人设的第 1 条 system 不见了。用户用 probe 复测：只发一条 system 时人设无效，把人设放进 user 消息就有效。
+- 开场请求的 `max_output_tokens=300` 被思考型模型的推理过程用光，正文为空（`completion_tokens=300`，`replies=0`）。
+
+**修正**：
+- 迁移 `00007_bot_persona_mode.sql`：
+  - `bot_settings.persona_mode`，取值 `user` 或 `system`，**默认 `user`**；
+  - bots 的 `max_output_tokens` 默认值改为 1024。已经存在的 bot 不会自动修改，需要在后台手动调大。
+- `user` 方式：不发送任何 system 消息。
+  - 第一条 user 消息以"【角色设定】……【设定结束】"开头（内容与 system 方式的 bot 级 + 对话级相同，前缀稳定）；如果对方的第一句话也是 user，就接在设定块后面。
+  - 本轮提示（时间 + 指令）追加到最后一条 user 消息末尾；最后一条是 assistant 时，单独补一条 user。
+- `system` 方式：保留原来的四段布局（§6）。
+- 后台"全局设置"新增"人设注入方式"选项。PUT 时这个字段为空表示保持当前值。
+- 模型正文为空并且 `finish_reason=length` 时，打 warn 日志，提示调大输出上限（日志不含正文）。

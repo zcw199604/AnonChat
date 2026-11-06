@@ -182,6 +182,7 @@ type BotSetting struct {
 	Timezone             string             `json:"timezone"`
 	UpdatedBy            pgtype.UUID        `json:"updated_by"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	PersonaMode          string             `json:"persona_mode"`
 }
 
 type BotUsage struct {

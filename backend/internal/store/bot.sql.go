@@ -181,7 +181,7 @@ const getBotSettings = `-- name: GetBotSettings :one
 
 SELECT id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model,
        llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone,
-       updated_by, updated_at
+       updated_by, updated_at, persona_mode
 FROM bot_settings
 WHERE id = 1
 `
@@ -205,6 +205,7 @@ func (q *Queries) GetBotSettings(ctx context.Context) (BotSetting, error) {
 		&i.Timezone,
 		&i.UpdatedBy,
 		&i.UpdatedAt,
+		&i.PersonaMode,
 	)
 	return i, err
 }
@@ -1042,11 +1043,12 @@ SET enabled = $1,
     bottle_min_age_seconds = $10,
     timezone = $11,
     updated_by = $12,
+    persona_mode = $13,
     updated_at = now()
 WHERE id = 1
 RETURNING id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model,
           llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone,
-          updated_by, updated_at
+          updated_by, updated_at, persona_mode
 `
 
 type UpdateBotSettingsParams struct {
@@ -1062,6 +1064,7 @@ type UpdateBotSettingsParams struct {
 	BottleMinAgeSeconds  int32       `json:"bottle_min_age_seconds"`
 	Timezone             string      `json:"timezone"`
 	UpdatedBy            pgtype.UUID `json:"updated_by"`
+	PersonaMode          string      `json:"persona_mode"`
 }
 
 func (q *Queries) UpdateBotSettings(ctx context.Context, arg UpdateBotSettingsParams) (BotSetting, error) {
@@ -1078,6 +1081,7 @@ func (q *Queries) UpdateBotSettings(ctx context.Context, arg UpdateBotSettingsPa
 		arg.BottleMinAgeSeconds,
 		arg.Timezone,
 		arg.UpdatedBy,
+		arg.PersonaMode,
 	)
 	var i BotSetting
 	err := row.Scan(
@@ -1095,6 +1099,7 @@ func (q *Queries) UpdateBotSettings(ctx context.Context, arg UpdateBotSettingsPa
 		&i.Timezone,
 		&i.UpdatedBy,
 		&i.UpdatedAt,
+		&i.PersonaMode,
 	)
 	return i, err
 }

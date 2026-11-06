@@ -68,6 +68,8 @@ type Settings struct {
 	MatchFallbackAfter time.Duration
 	BottleMinAge       time.Duration
 	Timezone           string
+	// PersonaMode 是人设注入方式：user（放进第一条 user 消息，默认）或 system。
+	PersonaMode string
 	// Location 是时区的 Location（解析失败时回退 UTC+8）。
 	Location *time.Location
 
@@ -209,6 +211,7 @@ func (c *SettingsCache) fromEnv() Settings {
 		MatchFallbackAfter: clampDuration(c.env.MatchFallbackAfter, minFallbackSecs, maxFallbackSecs),
 		BottleMinAge:       clampDuration(c.env.BottleMinAge, 0, maxBottleAgeSecs),
 		Timezone:           tz,
+		PersonaMode:        PersonaModeUser,
 		Location:           LoadLocation(tz),
 		APIKeySource:       APIKeySourceNone,
 	}
@@ -230,6 +233,7 @@ func (c *SettingsCache) fromRow(row store.BotSetting) Settings {
 		MatchFallbackAfter: time.Duration(row.MatchFallbackSeconds) * time.Second,
 		BottleMinAge:       time.Duration(row.BottleMinAgeSeconds) * time.Second,
 		Timezone:           row.Timezone,
+		PersonaMode:        normalizePersonaMode(row.PersonaMode),
 		Location:           LoadLocation(row.Timezone),
 		UpdatedAt:          row.UpdatedAt.Time,
 	}
@@ -333,6 +337,8 @@ type UpdateInput struct {
 	MatchFallbackSeconds int32
 	BottleMinAgeSeconds  int32
 	Timezone             string
+	// PersonaMode 为空表示保持当前值；否则必须是 user 或 system。
+	PersonaMode string
 	// APIKey 非空表示替换 key；ClearAPIKey 为 true 表示清除数据库中的 key。
 	APIKey      string
 	ClearAPIKey bool
@@ -358,6 +364,9 @@ func (in UpdateInput) Validate() error {
 	}
 	if strings.TrimSpace(in.Timezone) == "" {
 		return httpx.NewError(httpx.CodeInvalidRequest, "时区不能为空")
+	}
+	if m := strings.TrimSpace(in.PersonaMode); m != "" && m != PersonaModeUser && m != PersonaModeSystem {
+		return httpx.NewError(httpx.CodeInvalidRequest, "人设注入方式只能是 user 或 system")
 	}
 	if _, err := time.LoadLocation(in.Timezone); err != nil {
 		return httpx.NewError(httpx.CodeInvalidRequest, "时区无法识别，请填写 IANA 时区名（例如 Asia/Shanghai）")
@@ -410,6 +419,11 @@ func (c *SettingsCache) Update(ctx context.Context, in UpdateInput, adminID pgty
 		enc, hint, bound = nil, "", ""
 	}
 
+	personaMode := strings.TrimSpace(in.PersonaMode)
+	if personaMode == "" {
+		personaMode = normalizePersonaMode(current.PersonaMode)
+	}
+
 	row, err := c.q.UpdateBotSettings(ctx, store.UpdateBotSettingsParams{
 		Enabled:              in.Enabled,
 		LlmBaseUrl:           strings.TrimSpace(in.BaseURL),
@@ -423,6 +437,7 @@ func (c *SettingsCache) Update(ctx context.Context, in UpdateInput, adminID pgty
 		BottleMinAgeSeconds:  in.BottleMinAgeSeconds,
 		Timezone:             strings.TrimSpace(in.Timezone),
 		UpdatedBy:            adminID,
+		PersonaMode:          personaMode,
 	})
 	if err != nil {
 		return Settings{}, err
@@ -464,4 +479,12 @@ func clampDuration(d time.Duration, minSeconds, maxSeconds int) time.Duration {
 		secs = maxSeconds
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// normalizePersonaMode 把库里的值规范成 user / system（未知值按默认 user 处理）。
+func normalizePersonaMode(m string) string {
+	if strings.TrimSpace(m) == PersonaModeSystem {
+		return PersonaModeSystem
+	}
+	return PersonaModeUser
 }

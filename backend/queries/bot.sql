@@ -252,7 +252,7 @@ WHERE conversation_id = $1;
 -- name: GetBotSettings :one
 SELECT id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model,
        llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone,
-       updated_by, updated_at
+       updated_by, updated_at, persona_mode
 FROM bot_settings
 WHERE id = 1;
 
@@ -277,8 +277,9 @@ SET enabled = $1,
     bottle_min_age_seconds = $10,
     timezone = $11,
     updated_by = $12,
+    persona_mode = $13,
     updated_at = now()
 WHERE id = 1
 RETURNING id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model,
           llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone,
-          updated_by, updated_at;
+          updated_by, updated_at, persona_mode;
