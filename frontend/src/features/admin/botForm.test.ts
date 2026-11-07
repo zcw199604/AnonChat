@@ -218,10 +218,10 @@ describe('settingsForm', () => {
     expect(input.clearApiKey).toBeUndefined()
   })
 
-  it('人设注入方式在表单与负载之间往返，未知值回退为 user', () => {
+  it('旧 system 设置和未知值均使用 user，保存时固定 user', () => {
     const sys = settingsToForm({ ...sampleSettings(), personaMode: 'system' })
-    expect(sys.personaMode).toBe('system')
-    expect(formToSettingsInput(sys).personaMode).toBe('system')
+    expect(sys.personaMode).toBe('user')
+    expect(formToSettingsInput({ ...sys, personaMode: 'system' }).personaMode).toBe('user')
     const weird = settingsToForm({ ...sampleSettings(), personaMode: 'x' as never })
     expect(weird.personaMode).toBe('user')
   })

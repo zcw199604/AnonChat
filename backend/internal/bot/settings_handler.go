@@ -83,7 +83,7 @@ type settingsRequest struct {
 	FallbackSeconds     int32  `json:"matchFallbackSeconds"`
 	BottleMinAgeSeconds int32  `json:"bottleMinAgeSeconds"`
 	Timezone            string `json:"timezone"`
-	// PersonaMode 为空表示保持当前值（user | system）。
+	// PersonaMode 兼容旧客户端传值，实际统一使用 user。
 	PersonaMode string `json:"personaMode"`
 }
 

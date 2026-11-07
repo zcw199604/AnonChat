@@ -261,7 +261,7 @@ export interface BotSettings {
   matchFallbackSeconds: number
   bottleMinAgeSeconds: number
   timezone: string
-  /** 人设注入方式：user 把角色设定放进第一条 user 消息（兼容会丢弃 system 的网关），system 用 system 消息。 */
+  /** 运行时固定为 user；system 类型仅用于兼容旧数据。 */
   personaMode: PersonaMode
   /** key 只暴露"是否设置""末 4 位""来源"，永远不返回明文或密文。 */
   apiKeySet: boolean

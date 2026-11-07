@@ -29,7 +29,7 @@ func TestUserModeHasNoSystemMessages(t *testing.T) {
 	if first.Role != "user" {
 		t.Fatalf("第一条应为 user: %+v", first)
 	}
-	for _, want := range []string{"【角色设定", "角色名：小雅", "二十五岁的插画师", "【设定结束】", "你叫什么名字"} {
+	for _, want := range []string{"【角色设定", "角色名：小雅", "二十五岁的插画师", "额外要求：不要使用网络用语", "【设定结束】", "你叫什么名字"} {
 		if !strings.Contains(first.Content, want) {
 			t.Errorf("第一条 user 消息缺少 %q:\n%s", want, first.Content)
 		}

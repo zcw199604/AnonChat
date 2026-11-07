@@ -226,7 +226,7 @@ func TestClampSettings(t *testing.T) {
 	}
 }
 
-// TestUpdateInputPersonaMode 验证人设注入方式的校验：空值（保持当前）、user、system 合法，其余非法。
+// TestUpdateInputPersonaMode 验证旧客户端传值仍合法，但运行时统一为 user。
 func TestUpdateInputPersonaMode(t *testing.T) {
 	base := UpdateInput{TimeoutSeconds: 60, MatchFallbackSeconds: 10, BottleMinAgeSeconds: 0, Timezone: "Asia/Shanghai"}
 	for _, m := range []string{"", PersonaModeUser, PersonaModeSystem} {
@@ -241,10 +241,26 @@ func TestUpdateInputPersonaMode(t *testing.T) {
 	if err := in.Validate(); err == nil {
 		t.Error("PersonaMode=assistant 应被拒绝")
 	}
-	if got := normalizePersonaMode("system"); got != PersonaModeSystem {
-		t.Errorf("normalizePersonaMode(system)=%q", got)
+	if got := normalizePersonaMode("system"); got != PersonaModeUser {
+		t.Errorf("旧 system 设置应使用 user，得到 %q", got)
 	}
 	if got := normalizePersonaMode("weird"); got != PersonaModeUser {
 		t.Errorf("未知值应回退为 user，得到 %q", got)
+	}
+}
+
+func TestLegacySystemSettingKeepsExtraInstructionsInUserMessages(t *testing.T) {
+	in := userModeInput()
+	in.PersonaMode = normalizePersonaMode(PersonaModeSystem)
+	in.Card.SystemPrompt = "回复只写测试通过"
+	in.History = []PromptHistory{{Kind: "text", Text: "你好"}}
+	msgs := BuildMessages(in)
+	for _, msg := range msgs {
+		if msg.Role == "system" {
+			t.Fatal("旧 system 设置不能导致运行时发送 system 消息")
+		}
+	}
+	if !strings.Contains(msgs[0].Content, "额外要求：回复只写测试通过") {
+		t.Fatal("第一条 user 消息应包含额外指令")
 	}
 }

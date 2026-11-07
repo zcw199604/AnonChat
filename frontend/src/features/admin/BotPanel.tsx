@@ -263,21 +263,13 @@ function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
               onChange={(e) => setForm({ ...form, timezone: e.target.value })}
             />
           </label>
-          <label className="block space-y-1">
+          <div className="block space-y-1">
             <span className="text-xs text-lobby-sub">人设注入方式</span>
-            <select
-              aria-label="人设注入方式"
-              className={`w-full ${inputCls}`}
-              value={form.personaMode}
-              onChange={(e) => setForm({ ...form, personaMode: e.target.value === 'system' ? 'system' : 'user' })}
-            >
-              <option value="user">user 消息（兼容中转网关，推荐）</option>
-              <option value="system">system 消息（官方接口）</option>
-            </select>
+            <p className="text-sm text-lobby-text">user 消息</p>
             <span className="block text-[11px] text-lobby-sub">
-              bot 不认角色卡、自称 AI 助手时，说明网关丢弃了 system 消息，请用 user 方式。
+              角色设定和额外指令会随每轮对话一起发送。
             </span>
-          </label>
+          </div>
           <label className="block space-y-1">
             <span className="text-xs text-lobby-sub">匹配兜底时间（秒）</span>
             <input

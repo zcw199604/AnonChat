@@ -68,7 +68,7 @@ type Settings struct {
 	MatchFallbackAfter time.Duration
 	BottleMinAge       time.Duration
 	Timezone           string
-	// PersonaMode 是人设注入方式：user（放进第一条 user 消息，默认）或 system。
+	// PersonaMode 运行时固定为 user；兼容数据库中的旧 system 值。
 	PersonaMode string
 	// Location 是时区的 Location（解析失败时回退 UTC+8）。
 	Location *time.Location
@@ -337,7 +337,7 @@ type UpdateInput struct {
 	MatchFallbackSeconds int32
 	BottleMinAgeSeconds  int32
 	Timezone             string
-	// PersonaMode 为空表示保持当前值；否则必须是 user 或 system。
+	// PersonaMode 保留旧客户端兼容；接受 user/system，保存时统一为 user。
 	PersonaMode string
 	// APIKey 非空表示替换 key；ClearAPIKey 为 true 表示清除数据库中的 key。
 	APIKey      string
@@ -419,10 +419,7 @@ func (c *SettingsCache) Update(ctx context.Context, in UpdateInput, adminID pgty
 		enc, hint, bound = nil, "", ""
 	}
 
-	personaMode := strings.TrimSpace(in.PersonaMode)
-	if personaMode == "" {
-		personaMode = normalizePersonaMode(current.PersonaMode)
-	}
+	personaMode := normalizePersonaMode(in.PersonaMode)
 
 	row, err := c.q.UpdateBotSettings(ctx, store.UpdateBotSettingsParams{
 		Enabled:              in.Enabled,
@@ -481,10 +478,7 @@ func clampDuration(d time.Duration, minSeconds, maxSeconds int) time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
-// normalizePersonaMode 把库里的值规范成 user / system（未知值按默认 user 处理）。
-func normalizePersonaMode(m string) string {
-	if strings.TrimSpace(m) == PersonaModeSystem {
-		return PersonaModeSystem
-	}
+// normalizePersonaMode 统一使用已验证的 user 注入；旧 system 值不再影响运行时。
+func normalizePersonaMode(_ string) string {
 	return PersonaModeUser
 }

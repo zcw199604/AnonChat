@@ -230,7 +230,7 @@ export function settingsToForm(s: BotSettings): SettingsFormState {
     fallbackSeconds: String(s.matchFallbackSeconds),
     bottleMinAgeMinutes: String(Math.round(s.bottleMinAgeSeconds / 60)),
     timezone: s.timezone,
-    personaMode: s.personaMode === 'system' ? 'system' : 'user',
+    personaMode: 'user',
   }
 }
 
@@ -245,7 +245,7 @@ export function formToSettingsInput(form: SettingsFormState, clearApiKey = false
     matchFallbackSeconds: num(form.fallbackSeconds),
     bottleMinAgeSeconds: num(form.bottleMinAgeMinutes) * 60,
     timezone: form.timezone.trim(),
-    personaMode: form.personaMode,
+    personaMode: 'user',
   }
   const key = form.apiKey.trim()
   if (key !== '') input.apiKey = key
