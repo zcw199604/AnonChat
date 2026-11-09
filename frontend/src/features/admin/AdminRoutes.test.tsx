@@ -55,6 +55,22 @@ vi.mock('../../lib/api/client', () => {
         nextCursor: null,
       }),
     adminRevokeBan: ok,
+    adminOnlineUsers: () =>
+      Promise.resolve({
+        users: [
+          {
+            identityId: 'id1',
+            publicCode: 'ABCD3FGH9K',
+            nickname: '甲',
+            accountId: '',
+            ips: ['1.1.1.1'],
+            connCount: 1,
+            connectedAt: NOW,
+            userAgent: 'UA',
+          },
+        ],
+        total: 1,
+      }),
     adminAuditLogs: () =>
       Promise.resolve({
         logs: [

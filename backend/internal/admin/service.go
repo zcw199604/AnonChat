@@ -72,6 +72,7 @@ type Service struct {
 	logger   *slog.Logger
 	banSvc   *moderation.BanService
 	stats    realtime.ConnStats
+	online   OnlineLister
 	resolver *httpx.ClientIPResolver
 	userLim  moderation.RateLimiter
 	ipLim    moderation.RateLimiter
@@ -98,6 +99,20 @@ func WithLoginLimiters(user, ip moderation.RateLimiter) Option {
 		}
 		if ip != nil {
 			s.ipLim = ip
+		}
+	}
+}
+
+// OnlineLister 提供在线身份快照（由 realtime.Hub 实现）。
+type OnlineLister interface {
+	OnlineSnapshot() []realtime.OnlineIdentity
+}
+
+// WithOnlineLister 注入在线身份快照提供方（用于「在线用户」列表）。
+func WithOnlineLister(l OnlineLister) Option {
+	return func(s *Service) {
+		if l != nil {
+			s.online = l
 		}
 	}
 }
@@ -252,23 +267,28 @@ func hashToken(token string) []byte {
 	return sum[:]
 }
 
-// validateBanSubjectValue 校验封禁主体值格式。
-func validateBanSubjectValue(subjectType, value string) error {
+// normalizeBanValue 校验封禁主体值并返回规范化后的值：
+// 去掉首尾空白；IP 统一为 netip.ParseAddr 的字符串形式（与 httpx.ClientIPResolver.ClientIP
+// 返回的形式一致，保证封禁值能与 Hub 中记录的连接 IP 精确匹配）。
+func normalizeBanValue(subjectType, value string) (string, error) {
+	value = strings.TrimSpace(value)
 	if value == "" {
-		return fmt.Errorf("封禁主体值不能为空")
+		return "", fmt.Errorf("封禁主体值不能为空")
 	}
 	switch subjectType {
 	case moderation.SubjectIdentity, moderation.SubjectAccount:
 		var u pgtype.UUID
 		if err := u.Scan(value); err != nil || !u.Valid {
-			return fmt.Errorf("%s 必须是 UUID", subjectType)
+			return "", fmt.Errorf("%s 必须是 UUID", subjectType)
 		}
+		return value, nil
 	case moderation.SubjectIP:
-		if _, err := netip.ParseAddr(value); err != nil {
-			return fmt.Errorf("ip 不合法")
+		addr, err := netip.ParseAddr(value)
+		if err != nil {
+			return "", fmt.Errorf("ip 不合法")
 		}
+		return addr.String(), nil
 	default:
-		return fmt.Errorf("未知封禁类型: %s", subjectType)
+		return "", fmt.Errorf("未知封禁类型: %s", subjectType)
 	}
-	return nil
 }

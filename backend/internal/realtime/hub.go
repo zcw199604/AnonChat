@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -361,4 +362,82 @@ func (h *Hub) OnlineCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.byIdentity)
+}
+
+// OnlineIdentity 是某在线身份的聚合快照（供管理后台展示）。
+type OnlineIdentity struct {
+	IdentityID  pgtype.UUID
+	PublicCode  string
+	Nickname    string
+	AccountID   pgtype.UUID
+	IPs         []string // 去重、排序
+	ConnCount   int
+	ConnectedAt time.Time // 该身份最早一条在线连接的建立时间
+	UserAgent   string    // 最近建立的那条连接的 UA
+}
+
+// OnlineSnapshot 聚合当前全部在线身份（每个身份一条），按上线时间降序返回。
+// 只拷贝值，不暴露 Hub 内部的连接指针或 map。
+func (h *Hub) OnlineSnapshot() []OnlineIdentity {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	out := make([]OnlineIdentity, 0, len(h.byIdentity))
+	for identityID, set := range h.byIdentity {
+		if len(set) == 0 {
+			continue
+		}
+		// 用集合去重 IP，同时保留最早/最新连接的信息。
+		ipSet := make(map[string]struct{}, len(set))
+		var earliest time.Time
+		var latest time.Time
+		userAgent := ""
+		for c := range set {
+			if c.ip != "" {
+				ipSet[c.ip] = struct{}{}
+			}
+			at := c.connectedAt
+			if at.IsZero() {
+				continue
+			}
+			if earliest.IsZero() || at.Before(earliest) {
+				earliest = at
+			}
+			if latest.IsZero() || at.After(latest) {
+				latest = at
+				userAgent = c.userAgent
+			}
+		}
+		ips := make([]string, 0, len(ipSet))
+		for ip := range ipSet {
+			ips = append(ips, ip)
+		}
+		sort.Strings(ips)
+
+		item := OnlineIdentity{
+			IdentityID:  identityID,
+			IPs:         ips,
+			ConnCount:   len(set),
+			ConnectedAt: earliest,
+			UserAgent:   userAgent,
+		}
+		// 任取一条连接取身份字段（同一身份的各连接共享同一身份记录）。
+		for c := range set {
+			if c.identity != nil {
+				item.PublicCode = c.identity.PublicCode
+				item.Nickname = c.identity.Nickname
+				item.AccountID = c.identity.AccountID
+			}
+			break
+		}
+		out = append(out, item)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ConnectedAt.Equal(out[j].ConnectedAt) {
+			return out[i].IdentityID.String() < out[j].IdentityID.String()
+		}
+		return out[i].ConnectedAt.After(out[j].ConnectedAt)
+	})
+	return out
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
+	"github.com/anonchat/anonchat/backend/internal/realtime"
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
 
@@ -300,12 +301,15 @@ func (s *Service) CreateBanHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	subjects := make([]moderation.BanSubject, 0, len(req.Subjects))
+	auditSubjects := make([]map[string]string, 0, len(req.Subjects))
 	for _, sub := range req.Subjects {
-		if err := validateBanSubjectValue(sub.Type, sub.Value); err != nil {
+		value, err := normalizeBanValue(sub.Type, sub.Value)
+		if err != nil {
 			httpx.WriteError(w, httpx.NewError(httpx.CodeInvalidRequest, err.Error()))
 			return
 		}
-		subjects = append(subjects, moderation.BanSubject{Type: sub.Type, Value: sub.Value})
+		subjects = append(subjects, moderation.BanSubject{Type: sub.Type, Value: value})
+		auditSubjects = append(auditSubjects, map[string]string{"type": sub.Type, "value": value})
 	}
 	adminID, _ := AdminIDFromContext(r.Context())
 	bans, err := s.banSvc.Create(r.Context(), subjects, durationFromHours(req.DurationHours), req.Reason, adminID)
@@ -313,7 +317,11 @@ func (s *Service) CreateBanHandler(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, internalErr())
 		return
 	}
-	s.audit(r.Context(), adminID, ActionCreateBan, "", map[string]any{"count": len(bans), "reason": req.Reason})
+	s.audit(r.Context(), adminID, ActionCreateBan, "", map[string]any{
+		"count":    len(bans),
+		"reason":   req.Reason,
+		"subjects": auditSubjects,
+	})
 	out := make([]map[string]any, 0, len(bans))
 	for _, b := range bans {
 		out = append(out, banJSON(b))
@@ -335,6 +343,77 @@ func (s *Service) RevokeBanHandler(w http.ResponseWriter, r *http.Request) {
 	adminID, _ := AdminIDFromContext(r.Context())
 	s.audit(r.Context(), adminID, ActionRevokeBan, id.String(), nil)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- 在线用户 ----
+
+// maxOnlineUsers 是在线用户列表一次返回的最大条数（防止极端情况下响应过大）。
+const maxOnlineUsers = 500
+
+// OnlineUsersHandler 处理 GET /api/admin/online?q=。
+// 返回当前在线身份的快照（同一身份的多条连接聚合为一条），可按 q 过滤。
+func (s *Service) OnlineUsersHandler(w http.ResponseWriter, r *http.Request) {
+	if s.online == nil {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"users": []map[string]any{}, "total": 0})
+		return
+	}
+	snapshot := s.online.OnlineSnapshot()
+	total := len(snapshot)
+
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	users := make([]map[string]any, 0, len(snapshot))
+	for _, u := range snapshot {
+		if q != "" && !onlineIdentityMatches(u, q) {
+			continue
+		}
+		if len(users) >= maxOnlineUsers {
+			break
+		}
+		users = append(users, onlineIdentityJSON(u))
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"users": users, "total": total})
+}
+
+// onlineIdentityMatches 报告在线身份是否匹配搜索词（昵称 / 匿名编号 / 任一 IP 子串）。
+func onlineIdentityMatches(u realtime.OnlineIdentity, q string) bool {
+	if strings.Contains(strings.ToLower(u.Nickname), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(u.PublicCode), q) {
+		return true
+	}
+	for _, ip := range u.IPs {
+		if strings.Contains(strings.ToLower(ip), q) {
+			return true
+		}
+	}
+	return false
+}
+
+// onlineIdentityJSON 把在线身份快照转为响应 JSON（时间为 RFC3339）。
+func onlineIdentityJSON(u realtime.OnlineIdentity) map[string]any {
+	accountID := ""
+	if u.AccountID.Valid {
+		accountID = u.AccountID.String()
+	}
+	ips := u.IPs
+	if ips == nil {
+		ips = []string{}
+	}
+	connectedAt := ""
+	if !u.ConnectedAt.IsZero() {
+		connectedAt = u.ConnectedAt.UTC().Format(time.RFC3339)
+	}
+	return map[string]any{
+		"identityId":  u.IdentityID.String(),
+		"publicCode":  u.PublicCode,
+		"nickname":    u.Nickname,
+		"accountId":   accountID,
+		"ips":         ips,
+		"connCount":   u.ConnCount,
+		"connectedAt": connectedAt,
+		"userAgent":   u.UserAgent,
+	}
 }
 
 // ---- 统计 / 审计 ----

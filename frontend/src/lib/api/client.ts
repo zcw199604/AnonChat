@@ -457,6 +457,27 @@ export function adminRevokeBan(id: string): Promise<void> {
   return apiRequest<void>('DELETE', `/api/admin/bans/${id}`)
 }
 
+/** 一条在线身份快照（同一身份的多条连接已聚合）。 */
+export interface AdminOnlineUser {
+  identityId: string
+  publicCode: string
+  nickname: string
+  /** 未实名时为空字符串。 */
+  accountId: string
+  ips: string[]
+  connCount: number
+  connectedAt: string
+  userAgent: string
+}
+
+/** 在线用户列表：q 为可选搜索词（昵称/编号/IP 子串）。 */
+export function adminOnlineUsers(
+  q?: string,
+): Promise<{ users: AdminOnlineUser[]; total: number }> {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : ''
+  return apiRequest('GET', `/api/admin/online${qs}`)
+}
+
 export interface AdminAuditLog {
   id: number
   adminId: string

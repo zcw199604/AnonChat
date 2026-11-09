@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { adminReport, adminResolveReport } from '../../../lib/api/client'
 import type { AdminReportDetail } from '../../../lib/api/client'
 import { useUiStore } from '../../../stores/ui'
-import { banSubjects, validateBanForm } from '../banForm'
+import { BAN_DURATIONS, banSubjects, validateBanForm } from '../banForm'
 import type { BanFormState } from '../banForm'
 import { useAdmin } from '../context'
 import { useAsyncData } from '../hooks'
@@ -29,13 +29,6 @@ interface SnapshotItem {
   burnedAt?: string
   reported?: boolean
 }
-
-const DURATIONS = [
-  { value: 24, label: '1 天' },
-  { value: 168, label: '7 天' },
-  { value: 720, label: '30 天' },
-  { value: 0, label: '永久' },
-]
 
 /** 举报详情：左侧证据，右侧处理表单；返回列表时保留筛选参数。 */
 export function ReportDetailPage() {
@@ -238,7 +231,7 @@ export function ReportDetailPage() {
                   ariaLabel="封禁时长"
                   value={String(form.durationHours ?? 0)}
                   onChange={(v) => setForm({ ...form, durationHours: Number(v) })}
-                  options={DURATIONS.map((d) => ({ value: String(d.value), label: d.label }))}
+                  options={BAN_DURATIONS.map((d) => ({ value: String(d.value), label: d.label }))}
                 />
               </div>
 

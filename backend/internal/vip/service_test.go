@@ -26,7 +26,7 @@ func TestGenerateCodeFormat(t *testing.T) {
 
 func TestNormalizeCode(t *testing.T) {
 	cases := map[string]string{
-		"abcd-efgh-jkmn-pqrs": "ABCDEFGHJKMNPQRS",
+		"abcd-efgh-jkmn-pqrs":   "ABCDEFGHJKMNPQRS",
 		" ABCD EFGH JKMN PQRS ": "ABCDEFGHJKMNPQRS",
 		"OOOO-1111-LLLL-IIII":   "0000111111111111",
 	}

@@ -131,7 +131,8 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 
 	// 管理后台。
 	adminSvc := admin.New(pool, logger, banSvc, hub,
-		admin.WithLoginLimiters(limits.AdminLogin.New(), limits.AdminLogin.New()))
+		admin.WithLoginLimiters(limits.AdminLogin.New(), limits.AdminLogin.New()),
+		admin.WithOnlineLister(hub))
 	adminSvc.SetResolver(resolver)
 
 	// AI 机器人：管理接口始终可用；引擎也始终创建并运行（how.md §15.2）。
@@ -435,6 +436,7 @@ func (s *Server) adminHandler() http.Handler {
 	am.Handle("GET /api/admin/bans", a.RequireAdmin(http.HandlerFunc(a.ListBansHandler)))
 	am.Handle("POST /api/admin/bans", a.RequireAdmin(http.HandlerFunc(a.CreateBanHandler)))
 	am.Handle("DELETE /api/admin/bans/{id}", a.RequireAdmin(http.HandlerFunc(a.RevokeBanHandler)))
+	am.Handle("GET /api/admin/online", a.RequireAdmin(http.HandlerFunc(a.OnlineUsersHandler)))
 	am.Handle("GET /api/admin/stats", a.RequireAdmin(http.HandlerFunc(a.StatsHandler)))
 	am.Handle("GET /api/admin/audit-logs", a.RequireAdmin(http.HandlerFunc(a.AuditLogsHandler)))
 	am.Handle("GET /api/admin/identities/by-code/{code}", a.RequireAdmin(http.HandlerFunc(a.LookupIdentityByCodeHandler)))

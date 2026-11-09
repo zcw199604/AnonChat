@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -32,6 +33,8 @@ type Conn struct {
 	identity  *store.Identity
 	ip        string
 	userAgent string
+	// connectedAt 是连接建立时间（供管理后台展示上线时间）。
+	connectedAt time.Time
 
 	send chan outMessage
 	// done 在连接开始关闭时立即关闭（通知写 goroutine 退出、阻止再入队）。

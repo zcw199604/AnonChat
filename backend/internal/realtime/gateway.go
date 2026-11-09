@@ -154,14 +154,15 @@ func (g *Gateway) ServeWS(w http.ResponseWriter, r *http.Request) {
 	ws.SetReadLimit(g.opts.MaxFrameBytes)
 
 	c := &Conn{
-		g:         g,
-		ws:        ws,
-		identity:  ident,
-		ip:        ip,
-		userAgent: r.UserAgent(),
-		send:      make(chan outMessage, g.opts.SendBuffer),
-		done:      make(chan struct{}),
-		closed:    make(chan struct{}),
+		g:           g,
+		ws:          ws,
+		identity:    ident,
+		ip:          ip,
+		userAgent:   r.UserAgent(),
+		connectedAt: time.Now(),
+		send:        make(chan outMessage, g.opts.SendBuffer),
+		done:        make(chan struct{}),
+		closed:      make(chan struct{}),
 	}
 	c.closeConn = func(code websocket.StatusCode, reason string) {
 		_ = ws.Close(code, reason)
