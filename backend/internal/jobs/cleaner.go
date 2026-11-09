@@ -3,6 +3,7 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -100,6 +101,29 @@ func (c *Cleaner) RunOnce(ctx context.Context) (map[string]int64, error) {
 	smsCutoff := ts(now.Add(-smsRetention))
 	botUsageCutoff := ts(now.Add(-botUsageRetention))
 	nowTS := ts(now)
+
+	// 记忆清理先于身份与会话清理，以便各项删除数量不被级联删除掩盖。
+	// 三项独立执行；某项失败仍继续其他清理，最后统一返回错误。
+	var memoryErrors []error
+	for _, task := range []struct {
+		name string
+		run  func() (int64, error)
+	}{
+		{"bot_memories_expired", func() (int64, error) { return c.q.DeleteExpiredBotMemories(ctx, nowTS) }},
+		{"bot_memories_revoked", func() (int64, error) { return c.q.DeleteRevokedBotMemories(ctx) }},
+		{"bot_memory_cursors", func() (int64, error) { return c.q.DeleteOldBotMemoryCursors(ctx, ts(now.Add(-8*24*time.Hour))) }},
+	} {
+		start := time.Now()
+		n, err := task.run()
+		stats[task.name] = n
+		if err != nil {
+			// 数据库错误可能携带画像值，不传递到 Start 的日志。
+			memoryErrors = append(memoryErrors, errors.New(task.name+" 清理失败"))
+			c.logger.Warn("记忆清理失败", "table", task.name, "rows", n)
+			continue
+		}
+		c.logger.Info("保留期清理", "table", task.name, "rows", n, "duration_ms", time.Since(start).Milliseconds())
+	}
 
 	// 1. 过期消息（分批）。
 	if err := c.loop(ctx, stats, "messages", func() (int64, error) {
@@ -204,7 +228,7 @@ func (c *Cleaner) RunOnce(ctx context.Context) (map[string]int64, error) {
 		return stats, err
 	}
 
-	return stats, nil
+	return stats, errors.Join(memoryErrors...)
 }
 
 // loop 按 batchSize 循环删除直到不足一批。

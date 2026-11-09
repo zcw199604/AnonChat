@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { AdminBot, BotSettings, CharacterCard } from './botApi'
 import {
+  EMPTY_CARD_INPUT,
   cardToInput,
   copyCardInput,
   baseUrlChanged,
@@ -25,6 +26,7 @@ import {
 function sampleBot(): AdminBot {
   return {
     id: 'bot-1',
+    coreMode: 'single', reasonModel: '', memoryEnabled: true, memoryCount: 0,
     label: '客服 bot',
     cardId: 'card-1',
     mediaFolderId: null,
@@ -61,6 +63,7 @@ function sampleBot(): AdminBot {
       cleanMode: false,
     },
     usage: {
+      windowReasonTokens: 0, windowMemoryTokens: 0,
       usedTokens: 120,
       usedReplies: 2,
       windowTokens: 120,
@@ -122,6 +125,7 @@ describe('botForm', () => {
   it('formToCreatePayload 只带新建接口接受的字段', () => {
     const form = { ...emptyNewBotForm(), label: ' 新 bot ', nickname: '小新', cardId: 'c1' }
     expect(formToCreatePayload(form)).toEqual({
+      coreMode: 'single', reasonModel: '', memoryEnabled: true,
       label: '新 bot',
       nickname: '小新',
       cardId: 'c1',
@@ -181,6 +185,7 @@ describe('botForm', () => {
 function sampleSettings(): BotSettings {
   return {
     enabled: true,
+    reasonModel: '', memoryModel: '', memoryRetentionDays: 30, memoryExtractEvery: 20, oocGuard: true,
     baseUrl: 'https://api.example.com/v1',
     model: 'test-model',
     timeoutSeconds: 60,
@@ -295,6 +300,8 @@ describe('settingsForm 的 Base URL 绑定', () => {
 
 describe('角色卡复制', () => {
   const card: CharacterCard = {
+    ...EMPTY_CARD_INPUT,
+    sourceFormat: 'manual', expressionCount: 0,
     id: 'c1',
     name: '小雨',
     description: '大学生',
@@ -321,7 +328,62 @@ describe('角色卡复制', () => {
     expect(copy.exampleDialogue).toBe('A: 嗨')
   })
 
+  it('长名称复制仍满足后端40字限制，并能对截断后的名称去重', () => {
+    const longCard = { ...card, name: '角'.repeat(40) }
+    const first = copyCardInput(longCard)
+    expect([...first.name]).toHaveLength(40)
+    expect(first.name.endsWith(' 副本')).toBe(true)
+    const second = copyCardInput(longCard, [first.name])
+    expect([...second.name]).toHaveLength(40)
+    expect(second.name.endsWith(' 副本 2')).toBe(true)
+  })
+
   it('副本名已被占用时递增编号', () => {
     expect(copyCardInput(card, ['小雨', '小雨 副本', '小雨 副本 2']).name).toBe('小雨 副本 3')
+  })
+})
+
+// 新增的双核、长期记忆字段与后端约束保持一致。
+describe('P8 表单扩展', () => {
+  it('Bot 编辑与新建负载携带模式、智核模型和记忆开关', () => {
+    const form = botToForm({ ...sampleBot(), coreMode: 'dual', reasonModel: 'reason', memoryEnabled: false })
+    expect(form.coreMode).toBe('dual')
+    expect(form.memoryEnabled).toBe(false)
+    expect(formToUpdatePayload({ ...form, reasonModel: ' custom ' })).toMatchObject({ coreMode: 'dual', reasonModel: 'custom', memoryEnabled: false })
+    expect(formToCreatePayload({ ...emptyNewBotForm(), coreMode: 'dual', reasonModel: ' custom ', memoryEnabled: false })).toMatchObject({ coreMode: 'dual', reasonModel: 'custom', memoryEnabled: false })
+    expect(validateBotForm({ ...form, coreMode: 'invalid' as never })).toContain('驱动模式只允许 single 或 dual')
+  })
+
+  it('设置新字段可往返转换，数值边界与整数校验一致', () => {
+    const form = settingsToForm({ ...sampleSettings(), reasonModel: 'reason', memoryModel: 'memory', memoryRetentionDays: 30, memoryExtractEvery: 20, oocGuard: false })
+    expect(form).toMatchObject({ reasonModel: 'reason', memoryModel: 'memory', memoryRetentionDays: '30', memoryExtractEvery: '20', oocGuard: false })
+    expect(formToSettingsInput({ ...form, reasonModel: ' r ', memoryModel: ' m ' })).toMatchObject({ reasonModel: 'r', memoryModel: 'm', memoryRetentionDays: 30, memoryExtractEvery: 20, oocGuard: false })
+    for (const [field, values, word] of [
+      ['memoryRetentionDays', ['0', '366', '1.5', '', 'abc'], '保留'],
+      ['memoryExtractEvery', ['4', '201', '5.5', '', 'abc'], '抽取'],
+    ] as const) {
+      for (const value of values) expect(validateSettingsForm({ ...form, [field]: value }, form.baseUrl).some(e => e.includes(word))).toBe(true)
+    }
+    for (const [days,every] of [['1','5'],['365','200']]) expect(validateSettingsForm({ ...form, memoryRetentionDays: days, memoryExtractEvery: every }, form.baseUrl)).toEqual([])
+  })
+
+  it('数字设置不接受非法数、负数或整数字段的小数', () => {
+    const form = botToForm(sampleBot())
+    for (const [key, value] of [['temperature','abc'],['maxOutputTokens','16.5'],['windowSeconds','60.5'],['maxActiveMatches','0'],['convReplyLimit','-1'],['bottleIntervalSeconds','59']] as const) {
+      expect(validateBotForm({ ...form,[key]:value }).length).toBeGreaterThan(0)
+    }
+  })
+
+  it('复制角色卡深拷贝所有可编辑字段，排除只读来源和表情', () => {
+    const card: CharacterCard = { id: 'new', createdAt: '', updatedAt: '', ...EMPTY_CARD_INPUT,
+      name: '角色', heartPrompt: '心核', reasonPrompt: '智核', alternateGreetings: ['你好'], postHistoryInstructions: '历史后指令',
+      lorebook: [{ keys: ['考试'], content: '学校', enabled: true, constant: false, case_sensitive: false, order: 1, comment: '' }],
+      tools: ['recall_memory'], creatorNotes: '作者', sourceFormat: 'krp', expressionCount: 2 }
+    const copy = copyCardInput(card)
+    expect(copy).toMatchObject({ heartPrompt:'心核', reasonPrompt:'智核', alternateGreetings:['你好'], postHistoryInstructions:'历史后指令', creatorNotes:'作者',tools:['recall_memory'],lorebook:card.lorebook })
+    expect(copy).not.toHaveProperty('sourceFormat')
+    expect(copy).not.toHaveProperty('expressionCount')
+    copy.alternateGreetings.push('再见'); copy.tools.push('get_time'); copy.lorebook[0].keys.push('生日')
+    expect(card.alternateGreetings).toEqual(['你好']); expect(card.tools).toEqual(['recall_memory']); expect(card.lorebook[0].keys).toEqual(['考试'])
   })
 })

@@ -108,31 +108,35 @@ func (e *Engine) bottleForBot(ctx context.Context, entry *botEntry) {
 		return
 	}
 
-	text, res, ok := e.bottleReply(ctx, entry, picked)
+	text, calls, ok := e.bottleReply(ctx, entry, picked)
 	if !ok {
+		e.recordCalls(ctx, bot, pgtype.UUID{}, calls, false)
 		e.throwBack(ctx, bot, picked.ID)
 		e.setNextBottleAt(bot.ID, e.now().Add(e.pacer.bottleNext(interval)))
 		return
 	}
 	convID, err := e.bottles.Reply(ctx, bot.IdentityID, picked.ID, text)
 	if err != nil {
+		e.recordCalls(ctx, bot, pgtype.UUID{}, calls, false)
 		e.logger.Warn("bot 回复漂流瓶失败", "bot_id", bot.ID.String(), "error", err)
 		e.throwBack(ctx, bot, picked.ID)
 		e.setNextBottleAt(bot.ID, e.now().Add(e.pacer.bottleNext(interval)))
 		return
 	}
 	// 用量记录带上新会话的 ID。
-	e.recordUsage(ctx, bot, convID, res, true)
+	e.recordCalls(ctx, bot, convID, calls, true)
+	e.touchAfterReply(ctx, bot, picked.PosterIdentityID, nil)
 	e.setNextBottleAt(bot.ID, e.now().Add(e.pacer.bottleNext(interval)))
 }
 
 // bottleReply 用模型生成一条回复（只取文本气泡，用换行拼起来）。
-func (e *Engine) bottleReply(ctx context.Context, entry *botEntry, picked *bottle.PickedBottle) (string, ChatResult, bool) {
+func (e *Engine) bottleReply(ctx context.Context, entry *botEntry, picked *bottle.PickedBottle) (string, []modelCall, bool) {
 	card, err := e.card(ctx, entry.bot)
 	if err != nil || card == nil {
-		return "", ChatResult{}, false
+		return "", nil, false
 	}
 	in := PromptInput{
+		CoreMode:    entry.bot.CoreMode,
 		Card:        CardFromStore(*card),
 		MediaTags:   entry.tags,
 		Kind:        store.ConversationKindBottle,
@@ -142,8 +146,16 @@ func (e *Engine) bottleReply(ctx context.Context, entry *botEntry, picked *bottl
 		Instruction: InstructionBottle,
 		PersonaMode: e.Settings().PersonaMode,
 	}
+	if in.CoreMode == "" {
+		in.CoreMode = "single"
+	}
 	// 投瓶人的公开资料（与真人配对时使用的规则一致）。
 	if picked.PosterIdentityID.Valid {
+		in.Memory, in.Relation, err = e.loadPeerMemory(ctx, entry.bot.ID, picked.PosterIdentityID)
+		if err != nil {
+			e.logger.Warn("读取漂流瓶记忆失败", "bot_id", entry.bot.ID.String())
+			return "", nil, false
+		}
 		if poster, perr := e.q.GetIdentityByID(ctx, picked.PosterIdentityID); perr == nil {
 			in.Peer = PromptPeer{Gender: poster.Gender, Age: poster.Age, Tags: poster.Tags}
 			if poster.ProvincePublic && poster.Province != nil {
@@ -152,36 +164,22 @@ func (e *Engine) bottleReply(ctx context.Context, entry *botEntry, picked *bottl
 		}
 	}
 
-	client, timeout := e.llm()
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	model := strings.TrimSpace(entry.bot.Model)
-	if model == "" {
-		model = e.Settings().Model
-	}
-	res, err := client.Chat(cctx, ChatRequest{
-		Model:       model,
-		Messages:    BuildMessages(in),
-		MaxTokens:   int(entry.bot.MaxOutputTokens),
-		Temperature: float64(entry.bot.Temperature),
-		CacheKey:    CacheKey(entry.bot.ID),
-	})
+	bubbles, calls, err := e.chatStyled(ctx, entry.bot, in)
 	if err != nil {
-		e.logger.Warn("bot 生成漂流瓶回复失败", "bot_id", entry.bot.ID.String(), "error", err)
-		return "", ChatResult{}, false
+		e.logger.Warn("bot 生成漂流瓶回复失败", "bot_id", entry.bot.ID.String())
+		return "", calls, false
 	}
-	warnEmptyOutput(e.logger, entry.bot, res)
 	// 只取文本气泡。
 	lines := make([]string, 0, maxBubbles)
-	for _, b := range ParseReply(res.Content) {
+	for _, b := range bubbles {
 		if b.Kind == "text" && strings.TrimSpace(b.Text) != "" {
 			lines = append(lines, b.Text)
 		}
 	}
 	if len(lines) == 0 {
-		return "", ChatResult{}, false
+		return "", calls, false
 	}
-	return strings.Join(lines, "\n"), res, true
+	return strings.Join(lines, "\n"), calls, true
 }
 
 // throwBack 把瓶子放回海里（失败只记录日志）。

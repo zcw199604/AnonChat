@@ -17,12 +17,8 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
 
-// 角色卡字段长度上限（防御性校验，避免超长提示词）。
-const (
-	maxCardNameRunes  = 40
-	maxCardFieldRunes = 4000
-	maxBotLabelRunes  = 40
-)
+// bot 备注名长度上限。
+const maxBotLabelRunes = 40
 
 // 本包的对外错误。
 var (
@@ -43,6 +39,7 @@ type Service struct {
 	q      *store.Queries
 	logger *slog.Logger
 	conv   ConversationEnder
+	media  CardMedia
 }
 
 // Option 用于配置 Service。
@@ -66,105 +63,13 @@ func New(pool *pgxpool.Pool, logger *slog.Logger, opts ...Option) *Service {
 	return s
 }
 
-// ---- 角色卡 ----
-
-// CardInput 是新建/更新角色卡的字段。
-type CardInput struct {
-	Name            string
-	Description     string
-	Personality     string
-	Scenario        string
-	FirstMessage    string
-	ExampleDialogue string
-	SystemPrompt    string
-}
-
-// validate 校验角色卡（名称 1–40 字，其余字段有长度上限）。
-func (in CardInput) validate() error {
-	name := strings.TrimSpace(in.Name)
-	if name == "" || utf8.RuneCountInString(name) > maxCardNameRunes {
-		return httpx.NewError(httpx.CodeInvalidRequest, "角色名长度需为 1–40 字")
-	}
-	fields := []struct {
-		label string
-		value string
-	}{
-		{"身份与外貌", in.Description},
-		{"性格与说话风格", in.Personality},
-		{"场景设定", in.Scenario},
-		{"开场白", in.FirstMessage},
-		{"示例对话", in.ExampleDialogue},
-		{"额外系统指令", in.SystemPrompt},
-	}
-	for _, f := range fields {
-		if utf8.RuneCountInString(strings.TrimSpace(f.value)) > maxCardFieldRunes {
-			return httpx.NewError(httpx.CodeInvalidRequest, f.label+" 内容过长")
-		}
-	}
-	return nil
-}
-
-// ListCards 返回全部角色卡。
-func (s *Service) ListCards(ctx context.Context) ([]store.CharacterCard, error) {
-	return s.q.ListCharacterCards(ctx)
-}
-
-// CreateCard 新建角色卡。
-func (s *Service) CreateCard(ctx context.Context, in CardInput) (store.CharacterCard, error) {
-	if err := in.validate(); err != nil {
-		return store.CharacterCard{}, err
-	}
-	return s.q.InsertCharacterCard(ctx, store.InsertCharacterCardParams{
-		Name:            strings.TrimSpace(in.Name),
-		Description:     strings.TrimSpace(in.Description),
-		Personality:     strings.TrimSpace(in.Personality),
-		Scenario:        strings.TrimSpace(in.Scenario),
-		FirstMessage:    strings.TrimSpace(in.FirstMessage),
-		ExampleDialogue: strings.TrimSpace(in.ExampleDialogue),
-		SystemPrompt:    strings.TrimSpace(in.SystemPrompt),
-	})
-}
-
-// UpdateCard 更新角色卡。
-func (s *Service) UpdateCard(ctx context.Context, id pgtype.UUID, in CardInput) (store.CharacterCard, error) {
-	if err := in.validate(); err != nil {
-		return store.CharacterCard{}, err
-	}
-	card, err := s.q.UpdateCharacterCard(ctx, store.UpdateCharacterCardParams{
-		ID:              id,
-		Name:            strings.TrimSpace(in.Name),
-		Description:     strings.TrimSpace(in.Description),
-		Personality:     strings.TrimSpace(in.Personality),
-		Scenario:        strings.TrimSpace(in.Scenario),
-		FirstMessage:    strings.TrimSpace(in.FirstMessage),
-		ExampleDialogue: strings.TrimSpace(in.ExampleDialogue),
-		SystemPrompt:    strings.TrimSpace(in.SystemPrompt),
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return store.CharacterCard{}, ErrCardNotFound
-		}
-		return store.CharacterCard{}, err
-	}
-	return card, nil
-}
-
-// DeleteCard 删除角色卡（引用它的 bot 的 card_id 由外键置空）。
-func (s *Service) DeleteCard(ctx context.Context, id pgtype.UUID) error {
-	affected, err := s.q.DeleteCharacterCard(ctx, id)
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return ErrCardNotFound
-	}
-	return nil
-}
-
 // ---- Bot ----
 
 // CreateBotInput 是新建 bot 的入参（其余设置取库默认值）。
 type CreateBotInput struct {
+	CoreMode      *string
+	ReasonModel   *string
+	MemoryEnabled *bool
 	Label         string
 	Nickname      string
 	CardID        pgtype.UUID
@@ -174,6 +79,9 @@ type CreateBotInput struct {
 
 // CreateBot 在同一个事务里创建匿名身份与 bots 行（how.md §10）。
 func (s *Service) CreateBot(ctx context.Context, in CreateBotInput) (store.Bot, error) {
+	if in.CoreMode != nil && *in.CoreMode != "single" && *in.CoreMode != "dual" {
+		return store.Bot{}, httpx.NewError(httpx.CodeInvalidRequest, "coreMode 只允许 single 或 dual")
+	}
 	label := strings.TrimSpace(in.Label)
 	if label == "" || utf8.RuneCountInString(label) > maxBotLabelRunes {
 		return store.Bot{}, httpx.NewError(httpx.CodeInvalidRequest, "备注名长度需为 1–40 字")
@@ -211,6 +119,9 @@ func (s *Service) CreateBot(ctx context.Context, in CreateBotInput) (store.Bot, 
 		return store.Bot{}, err
 	}
 	created, err := q.InsertBot(ctx, store.InsertBotParams{
+		CoreMode:      botSetting(in.CoreMode, "single"),
+		ReasonModel:   strings.TrimSpace(botSetting(in.ReasonModel, "")),
+		MemoryEnabled: botSetting(in.MemoryEnabled, true),
 		IdentityID:    ident.ID,
 		Label:         label,
 		CardID:        in.CardID,
@@ -247,6 +158,9 @@ func (s *Service) BotDetail(ctx context.Context, id pgtype.UUID) (store.ListBots
 
 // UpdateBotInput 是更新 bot 的全部设置与对外资料。
 type UpdateBotInput struct {
+	CoreMode      *string
+	ReasonModel   *string
+	MemoryEnabled *bool
 	Label         string
 	CardID        pgtype.UUID
 	MediaFolderID pgtype.UUID
@@ -291,6 +205,9 @@ type ProfileInput struct {
 
 // UpdateBot 更新 bot 设置与它对外的身份资料（同一事务）。
 func (s *Service) UpdateBot(ctx context.Context, id pgtype.UUID, in UpdateBotInput) (store.Bot, error) {
+	if in.CoreMode != nil && *in.CoreMode != "single" && *in.CoreMode != "dual" {
+		return store.Bot{}, httpx.NewError(httpx.CodeInvalidRequest, "coreMode 只允许 single 或 dual")
+	}
 	label := strings.TrimSpace(in.Label)
 	if label == "" || utf8.RuneCountInString(label) > maxBotLabelRunes {
 		return store.Bot{}, httpx.NewError(httpx.CodeInvalidRequest, "备注名长度需为 1–40 字")
@@ -345,6 +262,9 @@ func (s *Service) UpdateBot(ctx context.Context, id pgtype.UUID, in UpdateBotInp
 	q := s.q.WithTx(tx)
 
 	updated, err := q.UpdateBot(ctx, store.UpdateBotParams{
+		CoreMode:               botSetting(in.CoreMode, existing.CoreMode),
+		ReasonModel:            strings.TrimSpace(botSetting(in.ReasonModel, existing.ReasonModel)),
+		MemoryEnabled:          botSetting(in.MemoryEnabled, existing.MemoryEnabled),
 		ID:                     id,
 		Label:                  label,
 		CardID:                 in.CardID,
@@ -457,4 +377,12 @@ func normalizeBotNickname(raw string) (string, string) {
 		return "", ""
 	}
 	return profile.NormalizeNickname(raw)
+}
+
+// botSetting 让旧客户端省略新字段时保留原设置，新建时使用默认值。
+func botSetting[T any](value *T, fallback T) T {
+	if value != nil {
+		return *value
+	}
+	return fallback
 }

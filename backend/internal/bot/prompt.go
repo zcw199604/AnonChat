@@ -2,6 +2,7 @@
 package bot
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/anonchat/anonchat/backend/internal/bot/persona"
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
 
@@ -58,25 +60,39 @@ const outputFormatPrompt = "输出格式：每条消息一行；" +
 
 // PromptCard 是角色卡在提示词里的投影。
 type PromptCard struct {
-	Name            string
-	Description     string
-	Personality     string
-	Scenario        string
-	FirstMessage    string
-	ExampleDialogue string
-	SystemPrompt    string
+	HeartPrompt             string
+	ReasonPrompt            string
+	AlternateGreetings      []string
+	PostHistoryInstructions string
+	Lorebook                []persona.LoreEntry
+	Tools                   []string
+	Name                    string
+	Description             string
+	Personality             string
+	Scenario                string
+	FirstMessage            string
+	ExampleDialogue         string
+	SystemPrompt            string
 }
 
 // CardFromStore 把库里的角色卡转成提示词用的角色卡。
 func CardFromStore(card store.CharacterCard) PromptCard {
+	var lore []persona.LoreEntry
+	_ = json.Unmarshal(card.Lorebook, &lore)
 	return PromptCard{
-		Name:            card.Name,
-		Description:     card.Description,
-		Personality:     card.Personality,
-		Scenario:        card.Scenario,
-		FirstMessage:    card.FirstMessage,
-		ExampleDialogue: card.ExampleDialogue,
-		SystemPrompt:    card.SystemPrompt,
+		HeartPrompt:             card.HeartPrompt,
+		ReasonPrompt:            card.ReasonPrompt,
+		AlternateGreetings:      card.AlternateGreetings,
+		PostHistoryInstructions: card.PostHistoryInstructions,
+		Lorebook:                lore,
+		Tools:                   card.Tools,
+		Name:                    card.Name,
+		Description:             card.Description,
+		Personality:             card.Personality,
+		Scenario:                card.Scenario,
+		FirstMessage:            card.FirstMessage,
+		ExampleDialogue:         card.ExampleDialogue,
+		SystemPrompt:            card.SystemPrompt,
 	}
 }
 
@@ -102,8 +118,15 @@ type PromptHistory struct {
 
 // PromptInput 是组装一次请求所需的全部输入。
 type PromptInput struct {
-	Card      PromptCard
-	MediaTags []string
+	Expressions   []PromptExpression
+	CoreMode      string
+	Memory        *PromptMemory
+	Relation      PromptRelation
+	TriggeredLore []string
+	ReasonNotes   *ReasonResult
+	FixHint       string
+	Card          PromptCard
+	MediaTags     []string
 	// Kind 是会话类型（match 或 bottle）。
 	Kind store.ConversationKind
 	Peer PromptPeer
@@ -130,7 +153,7 @@ func BuildMessages(in PromptInput) []ChatMessage {
 		return buildUserModeMessages(in)
 	}
 	msgs := make([]ChatMessage, 0, 3+len(in.History))
-	msgs = append(msgs, ChatMessage{Role: "system", Content: buildBotSystem(in.Card, in.MediaTags)})
+	msgs = append(msgs, ChatMessage{Role: "system", Content: buildBotSystem(in.Card, in.MediaTags, promptExpressions(in)...)})
 	if conv := buildConversationSystem(in); conv != "" {
 		msgs = append(msgs, ChatMessage{Role: "system", Content: conv})
 	}
@@ -138,6 +161,21 @@ func BuildMessages(in PromptInput) []ChatMessage {
 	msgs = append(msgs, mergeHistory(in.History[start:])...)
 	msgs = append(msgs, ChatMessage{Role: "system", Content: buildTailSystem(in)})
 	return msgs
+}
+
+// personaMessages 按注入方式把设定放到历史之前。
+func personaMessages(mode, setup string, history []ChatMessage) []ChatMessage {
+	role := "system"
+	if mode == PersonaModeUser {
+		role = "user"
+	}
+	msgs := make([]ChatMessage, 0, 1+len(history))
+	if role == "user" && len(history) > 0 && history[0].Role == "user" {
+		msgs = append(msgs, ChatMessage{Role: role, Content: setup + "\n\n" + history[0].Content})
+		return append(msgs, history[1:]...)
+	}
+	msgs = append(msgs, ChatMessage{Role: role, Content: setup})
+	return append(msgs, history...)
 }
 
 // buildUserModeMessages 组装 user 注入方式的消息（部分网关会丢弃 system 消息）：
@@ -149,19 +187,12 @@ func BuildMessages(in PromptInput) []ChatMessage {
 // 不发送任何 system 消息。设定块不随轮次变化，每轮只有末尾的提示会变，缓存前缀依然稳定。
 func buildUserModeMessages(in PromptInput) []ChatMessage {
 	setup := "【角色设定：以下是你要扮演的角色和聊天规则，只用于指导你的回复，不要向对方复述】\n" +
-		buildBotSystem(in.Card, in.MediaTags) + "\n" + buildConversationSystem(in) + "\n【设定结束】"
+		buildBotSystem(in.Card, in.MediaTags, promptExpressions(in)...) + "\n" + buildConversationSystem(in) + "\n【设定结束】"
 
 	start := historyStart(len(in.History), historyMaxMessages, historyDropBlock)
 	history := mergeHistory(in.History[start:])
 
-	msgs := make([]ChatMessage, 0, 2+len(history))
-	if len(history) > 0 && history[0].Role == "user" {
-		msgs = append(msgs, ChatMessage{Role: "user", Content: setup + "\n\n" + history[0].Content})
-		msgs = append(msgs, history[1:]...)
-	} else {
-		msgs = append(msgs, ChatMessage{Role: "user", Content: setup})
-		msgs = append(msgs, history...)
-	}
+	msgs := personaMessages(PersonaModeUser, setup, history)
 
 	note := "【" + buildTailSystem(in) + "】"
 	if last := len(msgs) - 1; msgs[last].Role == "user" {
@@ -172,8 +203,8 @@ func buildUserModeMessages(in PromptInput) []ChatMessage {
 	return msgs
 }
 
-// buildBotSystem 组装第 1 条 system：只依赖角色卡与排序后的媒体标签词表。
-func buildBotSystem(card PromptCard, tags []string) string {
+// buildBotSystem 组装第 1 条 system：只依赖角色卡、媒体标签和表情词表。
+func buildBotSystem(card PromptCard, tags []string, expressions ...PromptExpression) string {
 	var b strings.Builder
 	b.WriteString(platformPrompt)
 	if card.Name != "" {
@@ -182,8 +213,12 @@ func buildBotSystem(card PromptCard, tags []string) string {
 	appendField(&b, "身份与外貌", card.Description)
 	appendField(&b, "性格与说话风格", card.Personality)
 	appendField(&b, "场景设定", card.Scenario)
+	appendField(&b, "人设", card.HeartPrompt)
 	appendField(&b, "示例对话", card.ExampleDialogue)
 	appendField(&b, "额外要求", card.SystemPrompt)
+	if lore := constantLore(card); len(lore) > 0 {
+		appendField(&b, "常驻设定", strings.Join(lore, "\n"))
+	}
 	if len(tags) > 0 {
 		// 标签排序后再输出，保证同一 bot 的前缀逐字节稳定。
 		sorted := make([]string, len(tags))
@@ -191,9 +226,26 @@ func buildBotSystem(card PromptCard, tags []string) string {
 		sort.Strings(sorted)
 		fmt.Fprintf(&b, "\n可用的媒体标签：%s", strings.Join(sorted, "、"))
 	}
+	if len(expressions) > 0 {
+		sorted := append([]PromptExpression(nil), expressions...)
+		sort.SliceStable(sorted, func(i, j int) bool {
+			if sorted[i].Sort != sorted[j].Sort {
+				return sorted[i].Sort < sorted[j].Sort
+			}
+			return sorted[i].Key < sorted[j].Key
+		})
+		labels := make([]string, 0, len(sorted))
+		for _, e := range sorted {
+			labels = append(labels, e.Key+"（"+e.Description+"）")
+		}
+		appendField(&b, "可用表情", strings.Join(labels, "、"))
+	}
 	b.WriteString("\n")
 	b.WriteString(outputFormatPrompt)
-	return b.String()
+	if len(expressions) > 0 {
+		b.WriteString("\n想发表情时单独一行写 [表情:表情名]，一轮最多一个。")
+	}
+	return persona.ReplaceMacros(b.String(), card.Name)
 }
 
 // appendField 追加一个非空字段。
@@ -222,6 +274,10 @@ func buildConversationSystem(in PromptInput) string {
 	}
 	if in.Kind == store.ConversationKindBottle && strings.TrimSpace(in.BottleText) != "" {
 		fmt.Fprintf(&b, "\n瓶子原文：%s", strings.TrimSpace(in.BottleText))
+	}
+	if memory := RenderMemory(in.Memory); memory != "" {
+		b.WriteString("\n")
+		b.WriteString(memory)
 	}
 	return b.String()
 }
@@ -262,10 +318,7 @@ func buildTailSystem(in PromptInput) string {
 	if instruction == "" {
 		instruction = InstructionReply
 	}
-	if in.PersonaMode == PersonaModeUser {
-		return fmt.Sprintf("系统提示：当前时间 %s。%s", stamp, instruction)
-	}
-	return fmt.Sprintf("当前时间：%s\n%s", stamp, instruction)
+	return renderPromptTail(in, stamp, instruction)
 }
 
 // historyStart 计算历史截断的起点：超过 max 条时按 step 为块从最老一端整块丢弃。
@@ -329,7 +382,9 @@ func historyContent(h PromptHistory) string {
 
 // Bubble 是解析出来的一条待发送内容。
 type Bubble struct {
-	// Kind 是 text | image | video。
+	// Key 是表情气泡的标识。
+	Key string
+	// Kind 是 text | image | video | expression。
 	Kind string
 	// Text 是文本气泡的正文。
 	Text string
@@ -340,8 +395,16 @@ type Bubble struct {
 // mediaLineRe 匹配整行的媒体指令：[图片:标签1,标签2] 或 [视频：标签]。
 var mediaLineRe = regexp.MustCompile(`^\[(图片|视频)[:：]\s*(.+?)\]$`)
 
+// expressionLineRe 只接受独占一行的表情指令。
+var expressionLineRe = regexp.MustCompile(`^\[表情[:：]\s*(.+?)\]$`)
+
 // ParseReply 把模型输出解析成气泡列表（how.md §6）。
 func ParseReply(text string) []Bubble {
+	return parseReply(text, false)
+}
+
+// parseReply 在风格检查开启时保留泄露标记，避免被误认为角色名前缀。
+func parseReply(text string, preserveLeak bool) []Bubble {
 	lines := strings.Split(text, "\n")
 	trimmed := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -354,9 +417,20 @@ func ParseReply(text string) []Bubble {
 		return nil
 	}
 
-	out := make([]Bubble, 0, maxBubbles)
+	out := make([]Bubble, 0, maxBubbles+1)
+	normal, expression := 0, false
 	for _, line := range trimmed {
 		if isSilence(line) {
+			continue
+		}
+		if m := expressionLineRe.FindStringSubmatch(line); m != nil {
+			if key := strings.TrimSpace(m[1]); key != "" && !expression {
+				out = append(out, Bubble{Kind: "expression", Key: key})
+				expression = true
+			}
+			continue
+		}
+		if normal >= maxBubbles {
 			continue
 		}
 		// 先判断媒体行（媒体行里的冒号不能被当成角色名前缀分隔符）。
@@ -370,10 +444,15 @@ func ParseReply(text string) []Bubble {
 				kind = "video"
 			}
 			out = append(out, Bubble{Kind: kind, Tags: tags})
+		} else if preserveLeak && styleLeaks(line) {
+			out = append(out, Bubble{Kind: "text", Text: truncateRunes(line, maxBubbleRunes)})
 		} else if text := stripNamePrefix(line); text != "" {
 			out = append(out, Bubble{Kind: "text", Text: truncateRunes(text, maxBubbleRunes)})
+		} else {
+			continue
 		}
-		if len(out) == maxBubbles {
+		normal++
+		if normal == maxBubbles && expression {
 			break
 		}
 	}

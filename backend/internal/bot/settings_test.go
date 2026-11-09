@@ -10,7 +10,7 @@ import (
 
 // TestUpdateInputValidate 覆盖设置校验：URL、时区、取值范围。
 func TestUpdateInputValidate(t *testing.T) {
-	valid := UpdateInput{
+	valid := UpdateInput{MemoryRetentionDays: 30, MemoryExtractEvery: 20,
 		BaseURL:              "https://api.example.com/v1",
 		TimeoutSeconds:       60,
 		MatchFallbackSeconds: 10,
@@ -228,7 +228,7 @@ func TestClampSettings(t *testing.T) {
 
 // TestUpdateInputPersonaMode 验证旧客户端传值仍合法，但运行时统一为 user。
 func TestUpdateInputPersonaMode(t *testing.T) {
-	base := UpdateInput{TimeoutSeconds: 60, MatchFallbackSeconds: 10, BottleMinAgeSeconds: 0, Timezone: "Asia/Shanghai"}
+	base := UpdateInput{MemoryRetentionDays: 30, MemoryExtractEvery: 20, TimeoutSeconds: 60, MatchFallbackSeconds: 10, BottleMinAgeSeconds: 0, Timezone: "Asia/Shanghai"}
 	for _, m := range []string{"", PersonaModeUser, PersonaModeSystem} {
 		in := base
 		in.PersonaMode = m

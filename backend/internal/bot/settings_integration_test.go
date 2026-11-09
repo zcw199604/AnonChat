@@ -55,6 +55,63 @@ func putSettings(t *testing.T, env *testutil.Env, cookie string, payload map[str
 	return doJSON(t, env.Server, http.MethodPut, "/api/admin/bot-settings", payload, cookie)
 }
 
+// TestBotSettingsMemory 覆盖新设置的默认值、持久化、刷新及数据库约束边界。
+func TestBotSettingsMemory(t *testing.T) {
+	pool := testutil.MustPool(t)
+	testutil.Truncate(t, pool)
+	sharedPool = pool
+	env := newEnvWith(t, pool, testutil.Config{MediaRoot: t.TempDir()})
+	cookie := loginAdmin(t, pool, env.Server)
+	got, _ := getSettings(t, env, cookie)
+	defaults := map[string]any{"reasonModel": "", "memoryModel": "", "memoryRetentionDays": float64(30), "memoryExtractEvery": float64(20), "oocGuard": true}
+	for key, want := range defaults {
+		if got[key] != want {
+			t.Errorf("默认 %s = %v，期望 %v", key, got[key], want)
+		}
+	}
+	for _, boundary := range []struct {
+		days, every int
+		guard       bool
+	}{{1, 5, false}, {365, 200, true}} {
+		status, body := putSettings(t, env, cookie, settingsPayload(map[string]any{"reasonModel": " reason-test ", "memoryModel": " memory-test ", "memoryRetentionDays": boundary.days, "memoryExtractEvery": boundary.every, "oocGuard": boundary.guard}))
+		if status != http.StatusOK {
+			t.Fatalf("保存新字段失败: %d %s", status, body)
+		}
+		var saved map[string]any
+		if err := json.Unmarshal(body, &saved); err != nil {
+			t.Fatal(err)
+		}
+		// 重新加载数据库，避免仅缓存生效却未持久化。
+		var reason, memory string
+		var days, every int
+		var guard bool
+		if err := pool.QueryRow(ctx, "SELECT reason_model, memory_model, memory_retention_days, memory_extract_every, ooc_guard FROM bot_settings WHERE id=1").Scan(&reason, &memory, &days, &every, &guard); err != nil {
+			t.Fatal(err)
+		}
+		if reason != "reason-test" || memory != "memory-test" || days != boundary.days || every != boundary.every || guard != boundary.guard {
+			t.Fatal("新设置未持久化")
+		}
+		got, _ = getSettings(t, env, cookie)
+		wants := map[string]any{"reasonModel": "reason-test", "memoryModel": "memory-test", "memoryRetentionDays": float64(boundary.days), "memoryExtractEvery": float64(boundary.every), "oocGuard": boundary.guard}
+		for key, want := range wants {
+			if got[key] != want || saved[key] != want {
+				t.Errorf("%s: GET=%v PUT=%v，期望 %v", key, got[key], saved[key], want)
+			}
+		}
+	}
+	for _, field := range []struct {
+		key    string
+		values []int
+	}{{"memoryRetentionDays", []int{-1, 0, 366}}, {"memoryExtractEvery", []int{-1, 0, 4, 201}}} {
+		for _, value := range field.values {
+			status, body := putSettings(t, env, cookie, settingsPayload(map[string]any{field.key: value}))
+			if status != http.StatusBadRequest {
+				t.Errorf("%s=%d 应返回 400: %d %s", field.key, value, status, body)
+			}
+		}
+	}
+}
+
 // TestBotSettingsKeyStorage 覆盖 §15.5 第 1 条：
 // 响应里没有 key、数据库只存密文、不传 apiKey 保持不变、clearApiKey 能清除。
 func TestBotSettingsKeyStorage(t *testing.T) {

@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/anonchat/anonchat/backend/internal/admin"
+	"github.com/anonchat/anonchat/backend/internal/bot/persona"
 	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/store"
@@ -47,6 +49,16 @@ func NewHandler(svc *Service, adm *admin.Service, engine *Engine, settings *Sett
 
 // cardResponse 是角色卡的对外表示。
 type cardResponse struct {
+	HeartPrompt             string          `json:"heartPrompt"`
+	ReasonPrompt            string          `json:"reasonPrompt"`
+	AlternateGreetings      []string        `json:"alternateGreetings"`
+	PostHistoryInstructions string          `json:"postHistoryInstructions"`
+	Lorebook                json.RawMessage `json:"lorebook"`
+	Tools                   []string        `json:"tools"`
+	CreatorNotes            string          `json:"creatorNotes"`
+	SourceFormat            string          `json:"sourceFormat"`
+	ExpressionCount         int64           `json:"expressionCount"`
+
 	ID              string `json:"id"`
 	Name            string `json:"name"`
 	Description     string `json:"description"`
@@ -60,6 +72,14 @@ type cardResponse struct {
 }
 
 type cardRequest struct {
+	HeartPrompt             string              `json:"heartPrompt"`
+	ReasonPrompt            string              `json:"reasonPrompt"`
+	AlternateGreetings      []string            `json:"alternateGreetings"`
+	PostHistoryInstructions string              `json:"postHistoryInstructions"`
+	Lorebook                []persona.LoreEntry `json:"lorebook"`
+	Tools                   []string            `json:"tools"`
+	CreatorNotes            string              `json:"creatorNotes"`
+
 	Name            string `json:"name"`
 	Description     string `json:"description"`
 	Personality     string `json:"personality"`
@@ -72,6 +92,9 @@ type cardRequest struct {
 // toCardResponse 构造角色卡响应。
 func toCardResponse(card store.CharacterCard) cardResponse {
 	return cardResponse{
+		HeartPrompt: card.HeartPrompt, ReasonPrompt: card.ReasonPrompt,
+		AlternateGreetings: card.AlternateGreetings, PostHistoryInstructions: card.PostHistoryInstructions,
+		Lorebook: card.Lorebook, Tools: card.Tools, CreatorNotes: card.CreatorNotes, SourceFormat: card.SourceFormat,
 		ID:              card.ID.String(),
 		Name:            card.Name,
 		Description:     card.Description,
@@ -94,26 +117,32 @@ func (h *Handler) ListCardsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]cardResponse, 0, len(cards))
 	for _, card := range cards {
-		out = append(out, toCardResponse(card))
+		response := toCardResponse(card)
+		response.ExpressionCount, err = h.svc.ExpressionCount(r.Context(), card.ID)
+		if err != nil {
+			httpx.WriteError(w, internalErr())
+			return
+		}
+		out = append(out, response)
 	}
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
 // CreateCardHandler 处理 POST /api/admin/character-cards。
 func (h *Handler) CreateCardHandler(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxCardJSONBytes)
 	var req cardRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	card, err := h.svc.CreateCard(r.Context(), CardInput(req))
+	card, err := h.svc.CreateCard(r.Context(), req.input())
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	h.audit(r, "bot.card.create", card.ID.String(), map[string]any{"name": card.Name})
-	httpx.WriteJSON(w, http.StatusCreated, toCardResponse(card))
+	h.audit(r, "bot.card.create", card.ID.String(), map[string]any{"id": card.ID.String()})
+	h.writeCard(w, r, http.StatusCreated, card)
 }
 
 // UpdateCardHandler 处理 PUT /api/admin/character-cards/{id}。
@@ -123,20 +152,20 @@ func (h *Handler) UpdateCardHandler(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, httpx.NewError(httpx.CodeInvalidRequest, "角色卡 ID 非法"))
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, maxCardJSONBytes)
 	var req cardRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	card, err := h.svc.UpdateCard(r.Context(), id, CardInput(req))
+	card, err := h.svc.UpdateCard(r.Context(), id, req.input())
 	if err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
-	h.audit(r, "bot.card.update", card.ID.String(), map[string]any{"name": card.Name})
+	h.audit(r, "bot.card.update", card.ID.String(), map[string]any{"id": card.ID.String()})
 	h.invalidate()
-	httpx.WriteJSON(w, http.StatusOK, toCardResponse(card))
+	h.writeCard(w, r, http.StatusOK, card)
 }
 
 // DeleteCardHandler 处理 DELETE /api/admin/character-cards/{id}。
@@ -172,6 +201,8 @@ type profileResponse struct {
 
 // usageResponse 是 bot 的用量统计。
 type usageResponse struct {
+	WindowReasonTokens int64 `json:"windowReasonTokens"`
+	WindowMemoryTokens int64 `json:"windowMemoryTokens"`
 	UsedTokens         int64 `json:"usedTokens"`
 	UsedReplies        int64 `json:"usedReplies"`
 	WindowTokens       int64 `json:"windowTokens"`
@@ -183,6 +214,10 @@ type usageResponse struct {
 
 // botResponse 是 bot 的对外表示（设置 + 对外资料 + 用量）。
 type botResponse struct {
+	CoreMode              string          `json:"coreMode"`
+	ReasonModel           string          `json:"reasonModel"`
+	MemoryEnabled         bool            `json:"memoryEnabled"`
+	MemoryCount           int64           `json:"memoryCount"`
 	ID                    string          `json:"id"`
 	Label                 string          `json:"label"`
 	CardID                *string         `json:"cardId"`
@@ -221,6 +256,10 @@ func toBotResponse(row store.ListBotsRow) botResponse {
 		tags = []string{}
 	}
 	resp := botResponse{
+		CoreMode:              row.CoreMode,
+		ReasonModel:           row.ReasonModel,
+		MemoryEnabled:         row.MemoryEnabled,
+		MemoryCount:           row.MemoryCount,
 		ID:                    row.ID.String(),
 		Label:                 row.Label,
 		CardID:                uuidPtr(row.CardID),
@@ -258,6 +297,8 @@ func toBotResponse(row store.ListBotsRow) botResponse {
 			CleanMode:      row.CleanMode,
 		},
 		Usage: usageResponse{
+			WindowReasonTokens: row.WindowReasonTokens,
+			WindowMemoryTokens: row.WindowMemoryTokens,
 			UsedTokens:         row.UsedTokens,
 			UsedReplies:        row.UsedReplies,
 			WindowTokens:       row.WindowTokens,
@@ -273,11 +314,14 @@ func toBotResponse(row store.ListBotsRow) botResponse {
 }
 
 type createBotRequest struct {
-	Label         string `json:"label"`
-	Nickname      string `json:"nickname"`
-	CardID        string `json:"cardId"`
-	MediaFolderID string `json:"mediaFolderId"`
-	Enabled       bool   `json:"enabled"`
+	CoreMode      *string `json:"coreMode"`
+	ReasonModel   *string `json:"reasonModel"`
+	MemoryEnabled *bool   `json:"memoryEnabled"`
+	Label         string  `json:"label"`
+	Nickname      string  `json:"nickname"`
+	CardID        string  `json:"cardId"`
+	MediaFolderID string  `json:"mediaFolderId"`
+	Enabled       bool    `json:"enabled"`
 }
 
 type updateBotProfileRequest struct {
@@ -291,10 +335,13 @@ type updateBotProfileRequest struct {
 }
 
 type updateBotRequest struct {
-	Label         string `json:"label"`
-	CardID        string `json:"cardId"`
-	MediaFolderID string `json:"mediaFolderId"`
-	Enabled       bool   `json:"enabled"`
+	CoreMode      *string `json:"coreMode"`
+	ReasonModel   *string `json:"reasonModel"`
+	MemoryEnabled *bool   `json:"memoryEnabled"`
+	Label         string  `json:"label"`
+	CardID        string  `json:"cardId"`
+	MediaFolderID string  `json:"mediaFolderId"`
+	Enabled       bool    `json:"enabled"`
 
 	Model           string  `json:"model"`
 	Temperature     float32 `json:"temperature"`
@@ -335,6 +382,16 @@ func (h *Handler) ListBotsHandler(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, out)
 }
 
+// GetBotHandler 处理 GET /api/admin/bots/{id}。
+func (h *Handler) GetBotHandler(w http.ResponseWriter, r *http.Request) {
+	id, err := parseUUID(r.PathValue("id"))
+	if err != nil {
+		httpx.WriteError(w, httpx.NewError(httpx.CodeInvalidRequest, "bot ID 非法"))
+		return
+	}
+	h.writeBot(w, r, http.StatusOK, id)
+}
+
 // CreateBotHandler 处理 POST /api/admin/bots：身份与 bots 行在同一事务里创建。
 func (h *Handler) CreateBotHandler(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
@@ -354,6 +411,9 @@ func (h *Handler) CreateBotHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := h.svc.CreateBot(r.Context(), CreateBotInput{
+		CoreMode:      req.CoreMode,
+		ReasonModel:   req.ReasonModel,
+		MemoryEnabled: req.MemoryEnabled,
 		Label:         req.Label,
 		Nickname:      req.Nickname,
 		CardID:        cardID,
@@ -364,7 +424,7 @@ func (h *Handler) CreateBotHandler(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	h.audit(r, "bot.create", created.ID.String(), map[string]any{"label": created.Label})
+	h.audit(r, "bot.create", created.ID.String(), map[string]any{"id": created.ID.String()})
 	h.invalidate()
 	h.writeBot(w, r, http.StatusCreated, created.ID)
 }
@@ -393,6 +453,9 @@ func (h *Handler) UpdateBotHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, err := h.svc.UpdateBot(r.Context(), id, UpdateBotInput{
+		CoreMode:               req.CoreMode,
+		ReasonModel:            req.ReasonModel,
+		MemoryEnabled:          req.MemoryEnabled,
 		Label:                  req.Label,
 		CardID:                 cardID,
 		MediaFolderID:          folderID,
@@ -429,7 +492,7 @@ func (h *Handler) UpdateBotHandler(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	h.audit(r, "bot.update", updated.ID.String(), map[string]any{"enabled": updated.Enabled})
+	h.audit(r, "bot.update", updated.ID.String(), map[string]any{"id": updated.ID.String()})
 	h.invalidate()
 	h.writeBot(w, r, http.StatusOK, updated.ID)
 }

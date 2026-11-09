@@ -1,6 +1,6 @@
 # AnonChat 项目说明
 
-> 以代码为准。最后同步：界面改版 + 资料与匹配偏好 + VIP 激活码 + 公告广播 + 故事书（202611062140）。
+> 以代码为准。最后同步：Bot 人设包、双核驱动与长期记忆（202611092002）。
 
 ## 技术栈
 
@@ -102,3 +102,15 @@ deploy/                # Dockerfile、Caddyfile、Compose、备份、敏感词�
 - 激活码：16 位 Crockford Base32（80 bit），库中只存 sha256，兑换事务内 `SELECT … FOR UPDATE`，失败统一 `invalid_code`。
 - 新增错误码：`vip_required`、`invalid_code`、`no_broadcast_card`、`story_taken`、`story_not_valid`、`not_found`。
 - 前端视觉：强调色只有品牌紫 `#8B7CF6` 与辅助粉 `#E88BC4`，唯一阴影 `--shadow-soft`，动画 ≥150ms 且无弹跳，`prefers-reduced-motion` 下全部关闭。
+
+## Bot 人设与长期记忆
+
+参见 [实施方案](plan/202611092002_bot-persona-memory/how.md) 与 [任务状态](plan/202611092002_bot-persona-memory/task.md)。
+
+- `bot/persona` 纯解析 ST V1/V2/V3 JSON、PNG 和 `.krp`；PNG/ZIP使用标准库，仅将既有版本 `BurntSushi/toml` 提升为直接依赖。上传 Python 和命令不执行。
+- `single` 默认只运行心核；`dual` 先运行智核，以 JSON 文本调用 recall_memory、get_time、lookup_lore 白名单工具，失败降级单核。所有模型调用按 reply/reason/memory/retry 计量和限额。
+- 提示词分 bot 稳定前缀、会话记忆段、每轮结尾；支持宏、备选开场白、常驻/触发世界书。跑偏检测最多重写一次，不检查或修改 AI 身份表述。
+- 画像、事件、好感度和情绪按 `(bot, 对方匿名身份)` 隔离；worker 每60秒串行抽取，排除已焚毁消息。记忆默认最后互动后30天删除，后台可设1–365天；身份吊销时下次清理删除。
+- 表情走普通 image 消息，受 `conv_media_limit` 约束，每轮最多一张，新消息打断则跳过；用户侧接口不新增 bot、记忆或智核字段。
+- 后台沿用侧边栏路由、卡片和弹窗，支持导入、五分区编辑、表情、双核配置和记忆查看/确认删除；复制角色卡保留可编辑字段，不复制表情媒体，新卡来源 manual。所有 Bot 字符串留在管理懒加载包。
+- 迁移 `00009_bot_persona_memory.sql` 随 backend 启动自动执行，不新增服务或环境变量。部署前备份数据库与媒体卷；真实模型人工验收仍由任务 P11.2 跟踪。

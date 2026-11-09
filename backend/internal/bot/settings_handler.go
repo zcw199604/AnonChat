@@ -26,15 +26,20 @@ const (
 // settingsResponse 是全局设置的对外表示。
 // 注意：响应里永远不包含 API Key 的明文或密文，只给是否已设置与掩码提示。
 type settingsResponse struct {
-	Enabled          bool   `json:"enabled"`
-	BaseURL          string `json:"baseUrl"`
-	Model            string `json:"model"`
-	TimeoutSeconds   int32  `json:"timeoutSeconds"`
-	SendCacheKey     bool   `json:"sendCacheKey"`
-	FallbackSeconds  int32  `json:"matchFallbackSeconds"`
-	BottleMinAgeSecs int32  `json:"bottleMinAgeSeconds"`
-	Timezone         string `json:"timezone"`
-	PersonaMode      string `json:"personaMode"`
+	ReasonModel         string `json:"reasonModel"`
+	MemoryModel         string `json:"memoryModel"`
+	MemoryRetentionDays int32  `json:"memoryRetentionDays"`
+	MemoryExtractEvery  int32  `json:"memoryExtractEvery"`
+	OOCGuard            bool   `json:"oocGuard"`
+	Enabled             bool   `json:"enabled"`
+	BaseURL             string `json:"baseUrl"`
+	Model               string `json:"model"`
+	TimeoutSeconds      int32  `json:"timeoutSeconds"`
+	SendCacheKey        bool   `json:"sendCacheKey"`
+	FallbackSeconds     int32  `json:"matchFallbackSeconds"`
+	BottleMinAgeSecs    int32  `json:"bottleMinAgeSeconds"`
+	Timezone            string `json:"timezone"`
+	PersonaMode         string `json:"personaMode"`
 	// APIKeySet / APIKeyHint / APIKeySource 只暴露"是否设置""末 4 位""来源"。
 	APIKeySet  bool   `json:"apiKeySet"`
 	APIKeyHint string `json:"apiKeyHint"`
@@ -50,39 +55,51 @@ type settingsResponse struct {
 // toSettingsResponse 构造响应（绝不包含 key）。
 func toSettingsResponse(s Settings, encAvailable bool) settingsResponse {
 	return settingsResponse{
-		Enabled:          s.Enabled,
-		BaseURL:          s.BaseURL,
-		Model:            s.Model,
-		TimeoutSeconds:   int32(s.Timeout / time.Second),
-		SendCacheKey:     s.SendCacheKey,
-		FallbackSeconds:  int32(s.MatchFallbackAfter / time.Second),
-		BottleMinAgeSecs: int32(s.BottleMinAge / time.Second),
-		Timezone:         s.Timezone,
-		PersonaMode:      s.PersonaMode,
-		APIKeySet:        s.APIKeySet,
-		APIKeyHint:       s.APIKeyHint,
-		APIKeySrc:        s.APIKeySource,
-		APIKeyStale:      s.APIKeyStale,
-		SecretOK:         encAvailable,
-		Ready:            s.Ready,
-		NotReadyMsg:      s.NotReadyReason,
-		UpdatedAt:        formatTS(pgtype.Timestamptz{Time: s.UpdatedAt, Valid: !s.UpdatedAt.IsZero()}),
+		ReasonModel:         s.ReasonModel,
+		MemoryModel:         s.MemoryModel,
+		MemoryRetentionDays: int32(s.MemoryRetention / (24 * time.Hour)),
+		MemoryExtractEvery:  int32(s.MemoryExtractEvery),
+		OOCGuard:            s.OOCGuard,
+		Enabled:             s.Enabled,
+		BaseURL:             s.BaseURL,
+		Model:               s.Model,
+		TimeoutSeconds:      int32(s.Timeout / time.Second),
+		SendCacheKey:        s.SendCacheKey,
+		FallbackSeconds:     int32(s.MatchFallbackAfter / time.Second),
+		BottleMinAgeSecs:    int32(s.BottleMinAge / time.Second),
+		Timezone:            s.Timezone,
+		PersonaMode:         s.PersonaMode,
+		APIKeySet:           s.APIKeySet,
+		APIKeyHint:          s.APIKeyHint,
+		APIKeySrc:           s.APIKeySource,
+		APIKeyStale:         s.APIKeyStale,
+		SecretOK:            encAvailable,
+		Ready:               s.Ready,
+		NotReadyMsg:         s.NotReadyReason,
+		UpdatedAt: formatTS(pgtype.Timestamptz{Time: s.UpdatedAt,
+			Valid: !s.UpdatedAt.IsZero()}),
 	}
 }
 
 // settingsRequest 是保存全局设置的请求体。
 // apiKey 为空表示保持不变；clearApiKey=true 表示清除数据库中的 key。
 type settingsRequest struct {
-	Enabled             bool   `json:"enabled"`
-	BaseURL             string `json:"baseUrl"`
-	Model               string `json:"model"`
-	APIKey              string `json:"apiKey"`
-	ClearAPIKey         bool   `json:"clearApiKey"`
-	TimeoutSeconds      int32  `json:"timeoutSeconds"`
-	SendCacheKey        bool   `json:"sendCacheKey"`
-	FallbackSeconds     int32  `json:"matchFallbackSeconds"`
-	BottleMinAgeSeconds int32  `json:"bottleMinAgeSeconds"`
-	Timezone            string `json:"timezone"`
+	// 新字段省略时保留当前值，兼容尚未升级的后台客户端；显式传零仍校验。
+	ReasonModel         *string `json:"reasonModel"`
+	MemoryModel         *string `json:"memoryModel"`
+	MemoryRetentionDays *int32  `json:"memoryRetentionDays"`
+	MemoryExtractEvery  *int32  `json:"memoryExtractEvery"`
+	OOCGuard            *bool   `json:"oocGuard"`
+	Enabled             bool    `json:"enabled"`
+	BaseURL             string  `json:"baseUrl"`
+	Model               string  `json:"model"`
+	APIKey              string  `json:"apiKey"`
+	ClearAPIKey         bool    `json:"clearApiKey"`
+	TimeoutSeconds      int32   `json:"timeoutSeconds"`
+	SendCacheKey        bool    `json:"sendCacheKey"`
+	FallbackSeconds     int32   `json:"matchFallbackSeconds"`
+	BottleMinAgeSeconds int32   `json:"bottleMinAgeSeconds"`
+	Timezone            string  `json:"timezone"`
 	// PersonaMode 兼容旧客户端传值，实际统一使用 user。
 	PersonaMode string `json:"personaMode"`
 }
@@ -109,7 +126,30 @@ func (h *Handler) UpdateSettingsHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	adminID, _ := admin.AdminIDFromContext(r.Context())
+	current := h.settings.Get()
+	reason, memory := current.ReasonModel, current.MemoryModel
+	days, every, guard := int32(current.MemoryRetention/(24*time.Hour)), int32(current.MemoryExtractEvery), current.OOCGuard
+	if req.ReasonModel != nil {
+		reason = *req.ReasonModel
+	}
+	if req.MemoryModel != nil {
+		memory = *req.MemoryModel
+	}
+	if req.MemoryRetentionDays != nil {
+		days = *req.MemoryRetentionDays
+	}
+	if req.MemoryExtractEvery != nil {
+		every = *req.MemoryExtractEvery
+	}
+	if req.OOCGuard != nil {
+		guard = *req.OOCGuard
+	}
 	updated, err := h.settings.Update(r.Context(), UpdateInput{
+		ReasonModel:          reason,
+		MemoryModel:          memory,
+		MemoryRetentionDays:  days,
+		MemoryExtractEvery:   every,
+		OOCGuard:             guard,
 		Enabled:              req.Enabled,
 		BaseURL:              req.BaseURL,
 		Model:                req.Model,
@@ -234,8 +274,9 @@ func (h *Handler) TestSettingsHandler(w http.ResponseWriter, r *http.Request) {
 
 	started := time.Now()
 	_, err := client.Chat(ctx, ChatRequest{
-		Model:       model,
-		Messages:    []ChatMessage{{Role: "user", Content: "ping"}},
+		Model: model,
+		Messages: []ChatMessage{{Role: "user",
+			Content: "ping"}},
 		MaxTokens:   testConnectionMaxTokens,
 		Temperature: 0,
 	})
@@ -269,6 +310,6 @@ func sanitizeTestError(msg, apiKey string) string {
 
 // isHTTPURL 判断是否是 http/https 绝对地址。
 func isHTTPURL(raw string) bool {
-	in := UpdateInput{BaseURL: raw, TimeoutSeconds: minTimeoutSeconds, MatchFallbackSeconds: minFallbackSecs, Timezone: "UTC"}
+	in := UpdateInput{MemoryRetentionDays: 30, MemoryExtractEvery: 20, BaseURL: raw, TimeoutSeconds: minTimeoutSeconds, MatchFallbackSeconds: minFallbackSecs, Timezone: "UTC"}
 	return in.Validate() == nil
 }

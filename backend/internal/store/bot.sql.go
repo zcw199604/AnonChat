@@ -45,6 +45,30 @@ func (q *Queries) CountActiveMatchConversationsForIdentity(ctx context.Context, 
 	return active_matches, err
 }
 
+const countCardExpressions = `-- name: CountCardExpressions :one
+SELECT count(*) FROM card_expressions WHERE card_id = $1
+`
+
+func (q *Queries) CountCardExpressions(ctx context.Context, cardID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countCardExpressions, cardID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countConversationMediaMessages = `-- name: CountConversationMediaMessages :one
+SELECT count(*) FROM messages
+WHERE conversation_id = $1 AND kind IN ('image', 'video') AND media_id IS NOT NULL
+`
+
+// 表情允许重复发送，限额按实际媒体消息条数计算。
+func (q *Queries) CountConversationMediaMessages(ctx context.Context, conversationID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countConversationMediaMessages, conversationID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countConversationMessages = `-- name: CountConversationMessages :one
 SELECT count(*)::bigint AS messages
 FROM messages
@@ -71,6 +95,18 @@ func (q *Queries) DeleteBot(ctx context.Context, id pgtype.UUID) (int64, error) 
 	return result.RowsAffected(), nil
 }
 
+const deleteCardExpression = `-- name: DeleteCardExpression :execrows
+DELETE FROM card_expressions WHERE id = $1
+`
+
+func (q *Queries) DeleteCardExpression(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCardExpression, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteCharacterCard = `-- name: DeleteCharacterCard :execrows
 DELETE FROM character_cards WHERE id = $1
 `
@@ -89,7 +125,7 @@ SELECT id, identity_id, label, card_id, media_folder_id, enabled, model, tempera
        total_token_limit, total_reply_limit, window_seconds, window_token_limit,
        window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
        reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-       used_tokens, used_replies, created_at, updated_at
+       used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 FROM bots
 WHERE id = $1
 `
@@ -126,6 +162,9 @@ func (q *Queries) GetBot(ctx context.Context, id pgtype.UUID) (Bot, error) {
 		&i.UsedReplies,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CoreMode,
+		&i.ReasonModel,
+		&i.MemoryEnabled,
 	)
 	return i, err
 }
@@ -136,7 +175,7 @@ SELECT id, identity_id, label, card_id, media_folder_id, enabled, model, tempera
        total_token_limit, total_reply_limit, window_seconds, window_token_limit,
        window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
        reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-       used_tokens, used_replies, created_at, updated_at
+       used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 FROM bots
 WHERE identity_id = $1
 `
@@ -173,15 +212,16 @@ func (q *Queries) GetBotByIdentity(ctx context.Context, identityID pgtype.UUID) 
 		&i.UsedReplies,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CoreMode,
+		&i.ReasonModel,
+		&i.MemoryEnabled,
 	)
 	return i, err
 }
 
 const getBotSettings = `-- name: GetBotSettings :one
 
-SELECT id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model,
-       llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone,
-       updated_by, updated_at, persona_mode
+SELECT id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model, llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone, updated_by, updated_at, persona_mode, reason_model, memory_model, memory_retention_days, memory_extract_every, ooc_guard
 FROM bot_settings
 WHERE id = 1
 `
@@ -206,13 +246,36 @@ func (q *Queries) GetBotSettings(ctx context.Context) (BotSetting, error) {
 		&i.UpdatedBy,
 		&i.UpdatedAt,
 		&i.PersonaMode,
+		&i.ReasonModel,
+		&i.MemoryModel,
+		&i.MemoryRetentionDays,
+		&i.MemoryExtractEvery,
+		&i.OocGuard,
+	)
+	return i, err
+}
+
+const getCardExpression = `-- name: GetCardExpression :one
+SELECT id, card_id, key, description, media_item_id, sort, created_at FROM card_expressions WHERE id = $1
+`
+
+func (q *Queries) GetCardExpression(ctx context.Context, id pgtype.UUID) (CardExpression, error) {
+	row := q.db.QueryRow(ctx, getCardExpression, id)
+	var i CardExpression
+	err := row.Scan(
+		&i.ID,
+		&i.CardID,
+		&i.Key,
+		&i.Description,
+		&i.MediaItemID,
+		&i.Sort,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getCharacterCard = `-- name: GetCharacterCard :one
-SELECT id, name, description, personality, scenario, first_message, example_dialogue, system_prompt,
-       created_at, updated_at
+SELECT id, name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at, heart_prompt, reason_prompt, alternate_greetings, post_history_instructions, lorebook, tools, expression_folder_id, creator_notes, source_format, extensions
 FROM character_cards
 WHERE id = $1
 `
@@ -231,6 +294,48 @@ func (q *Queries) GetCharacterCard(ctx context.Context, id pgtype.UUID) (Charact
 		&i.SystemPrompt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HeartPrompt,
+		&i.ReasonPrompt,
+		&i.AlternateGreetings,
+		&i.PostHistoryInstructions,
+		&i.Lorebook,
+		&i.Tools,
+		&i.ExpressionFolderID,
+		&i.CreatorNotes,
+		&i.SourceFormat,
+		&i.Extensions,
+	)
+	return i, err
+}
+
+const getCharacterCardForUpdate = `-- name: GetCharacterCardForUpdate :one
+SELECT id, name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at, heart_prompt, reason_prompt, alternate_greetings, post_history_instructions, lorebook, tools, expression_folder_id, creator_notes, source_format, extensions FROM character_cards WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetCharacterCardForUpdate(ctx context.Context, id pgtype.UUID) (CharacterCard, error) {
+	row := q.db.QueryRow(ctx, getCharacterCardForUpdate, id)
+	var i CharacterCard
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Personality,
+		&i.Scenario,
+		&i.FirstMessage,
+		&i.ExampleDialogue,
+		&i.SystemPrompt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HeartPrompt,
+		&i.ReasonPrompt,
+		&i.AlternateGreetings,
+		&i.PostHistoryInstructions,
+		&i.Lorebook,
+		&i.Tools,
+		&i.ExpressionFolderID,
+		&i.CreatorNotes,
+		&i.SourceFormat,
+		&i.Extensions,
 	)
 	return i, err
 }
@@ -242,7 +347,7 @@ SELECT b.id, b.identity_id, b.label, b.card_id, b.media_folder_id, b.enabled, b.
        b.total_token_limit, b.total_reply_limit, b.window_seconds, b.window_token_limit,
        b.window_reply_limit, b.conv_reply_limit, b.conv_min_interval_seconds, b.conv_media_limit,
        b.reply_delay_min_ms, b.reply_delay_max_ms, b.typing_ms_per_char, b.bottle_interval_seconds,
-       b.used_tokens, b.used_replies, b.created_at, b.updated_at
+       b.used_tokens, b.used_replies, b.created_at, b.updated_at, b.core_mode, b.reason_model, b.memory_enabled
 FROM conversation_members cm
 JOIN bots b ON b.identity_id = cm.identity_id
 WHERE cm.conversation_id = $1 AND cm.left_at IS NULL
@@ -284,6 +389,9 @@ func (q *Queries) GetConversationBot(ctx context.Context, conversationID pgtype.
 		&i.UsedReplies,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CoreMode,
+		&i.ReasonModel,
+		&i.MemoryEnabled,
 	)
 	return i, err
 }
@@ -311,14 +419,14 @@ func (q *Queries) GetConversationBotUsage(ctx context.Context, conversationID pg
 }
 
 const insertBot = `-- name: InsertBot :one
-INSERT INTO bots (identity_id, label, card_id, media_folder_id, enabled)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO bots (identity_id, label, card_id, media_folder_id, enabled, core_mode, reason_model, memory_enabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id, identity_id, label, card_id, media_folder_id, enabled, model, temperature,
           max_output_tokens, serve_match, serve_bottle, max_active_matches,
           total_token_limit, total_reply_limit, window_seconds, window_token_limit,
           window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
           reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-          used_tokens, used_replies, created_at, updated_at
+          used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 `
 
 type InsertBotParams struct {
@@ -327,6 +435,9 @@ type InsertBotParams struct {
 	CardID        pgtype.UUID `json:"card_id"`
 	MediaFolderID pgtype.UUID `json:"media_folder_id"`
 	Enabled       bool        `json:"enabled"`
+	CoreMode      string      `json:"core_mode"`
+	ReasonModel   string      `json:"reason_model"`
+	MemoryEnabled bool        `json:"memory_enabled"`
 }
 
 func (q *Queries) InsertBot(ctx context.Context, arg InsertBotParams) (Bot, error) {
@@ -336,6 +447,9 @@ func (q *Queries) InsertBot(ctx context.Context, arg InsertBotParams) (Bot, erro
 		arg.CardID,
 		arg.MediaFolderID,
 		arg.Enabled,
+		arg.CoreMode,
+		arg.ReasonModel,
+		arg.MemoryEnabled,
 	)
 	var i Bot
 	err := row.Scan(
@@ -367,6 +481,9 @@ func (q *Queries) InsertBot(ctx context.Context, arg InsertBotParams) (Bot, erro
 		&i.UsedReplies,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CoreMode,
+		&i.ReasonModel,
+		&i.MemoryEnabled,
 	)
 	return i, err
 }
@@ -406,9 +523,9 @@ func (q *Queries) InsertBotSettings(ctx context.Context, arg InsertBotSettingsPa
 
 const insertBotUsage = `-- name: InsertBotUsage :one
 
-INSERT INTO bot_usage (bot_id, conversation_id, prompt_tokens, completion_tokens, cached_tokens, replies)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, bot_id, conversation_id, prompt_tokens, completion_tokens, cached_tokens, replies, created_at
+INSERT INTO bot_usage (bot_id, conversation_id, prompt_tokens, completion_tokens, cached_tokens, replies, kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, bot_id, conversation_id, prompt_tokens, completion_tokens, cached_tokens, replies, created_at, kind
 `
 
 type InsertBotUsageParams struct {
@@ -418,6 +535,7 @@ type InsertBotUsageParams struct {
 	CompletionTokens int32       `json:"completion_tokens"`
 	CachedTokens     int32       `json:"cached_tokens"`
 	Replies          int32       `json:"replies"`
+	Kind             string      `json:"kind"`
 }
 
 // ---- 用量 ----
@@ -429,6 +547,7 @@ func (q *Queries) InsertBotUsage(ctx context.Context, arg InsertBotUsageParams) 
 		arg.CompletionTokens,
 		arg.CachedTokens,
 		arg.Replies,
+		arg.Kind,
 	)
 	var i BotUsage
 	err := row.Scan(
@@ -440,25 +559,69 @@ func (q *Queries) InsertBotUsage(ctx context.Context, arg InsertBotUsageParams) 
 		&i.CachedTokens,
 		&i.Replies,
 		&i.CreatedAt,
+		&i.Kind,
+	)
+	return i, err
+}
+
+const insertCardExpression = `-- name: InsertCardExpression :one
+INSERT INTO card_expressions (card_id, key, description, media_item_id, sort)
+VALUES ($1, $2, $3, $4, $5) RETURNING id, card_id, key, description, media_item_id, sort, created_at
+`
+
+type InsertCardExpressionParams struct {
+	CardID      pgtype.UUID `json:"card_id"`
+	Key         string      `json:"key"`
+	Description string      `json:"description"`
+	MediaItemID pgtype.UUID `json:"media_item_id"`
+	Sort        int32       `json:"sort"`
+}
+
+func (q *Queries) InsertCardExpression(ctx context.Context, arg InsertCardExpressionParams) (CardExpression, error) {
+	row := q.db.QueryRow(ctx, insertCardExpression,
+		arg.CardID,
+		arg.Key,
+		arg.Description,
+		arg.MediaItemID,
+		arg.Sort,
+	)
+	var i CardExpression
+	err := row.Scan(
+		&i.ID,
+		&i.CardID,
+		&i.Key,
+		&i.Description,
+		&i.MediaItemID,
+		&i.Sort,
+		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const insertCharacterCard = `-- name: InsertCharacterCard :one
-INSERT INTO character_cards (name, description, personality, scenario, first_message, example_dialogue, system_prompt)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, name, description, personality, scenario, first_message, example_dialogue, system_prompt,
-          created_at, updated_at
+INSERT INTO character_cards (name, description, personality, scenario, first_message, example_dialogue, system_prompt, heart_prompt, reason_prompt, alternate_greetings, post_history_instructions, lorebook, tools, expression_folder_id, creator_notes, source_format, extensions)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+RETURNING id, name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at, heart_prompt, reason_prompt, alternate_greetings, post_history_instructions, lorebook, tools, expression_folder_id, creator_notes, source_format, extensions
 `
 
 type InsertCharacterCardParams struct {
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	Personality     string `json:"personality"`
-	Scenario        string `json:"scenario"`
-	FirstMessage    string `json:"first_message"`
-	ExampleDialogue string `json:"example_dialogue"`
-	SystemPrompt    string `json:"system_prompt"`
+	Name                    string      `json:"name"`
+	Description             string      `json:"description"`
+	Personality             string      `json:"personality"`
+	Scenario                string      `json:"scenario"`
+	FirstMessage            string      `json:"first_message"`
+	ExampleDialogue         string      `json:"example_dialogue"`
+	SystemPrompt            string      `json:"system_prompt"`
+	HeartPrompt             string      `json:"heart_prompt"`
+	ReasonPrompt            string      `json:"reason_prompt"`
+	AlternateGreetings      []string    `json:"alternate_greetings"`
+	PostHistoryInstructions string      `json:"post_history_instructions"`
+	Lorebook                []byte      `json:"lorebook"`
+	Tools                   []string    `json:"tools"`
+	ExpressionFolderID      pgtype.UUID `json:"expression_folder_id"`
+	CreatorNotes            string      `json:"creator_notes"`
+	SourceFormat            string      `json:"source_format"`
+	Extensions              []byte      `json:"extensions"`
 }
 
 func (q *Queries) InsertCharacterCard(ctx context.Context, arg InsertCharacterCardParams) (CharacterCard, error) {
@@ -470,6 +633,16 @@ func (q *Queries) InsertCharacterCard(ctx context.Context, arg InsertCharacterCa
 		arg.FirstMessage,
 		arg.ExampleDialogue,
 		arg.SystemPrompt,
+		arg.HeartPrompt,
+		arg.ReasonPrompt,
+		arg.AlternateGreetings,
+		arg.PostHistoryInstructions,
+		arg.Lorebook,
+		arg.Tools,
+		arg.ExpressionFolderID,
+		arg.CreatorNotes,
+		arg.SourceFormat,
+		arg.Extensions,
 	)
 	var i CharacterCard
 	err := row.Scan(
@@ -483,6 +656,16 @@ func (q *Queries) InsertCharacterCard(ctx context.Context, arg InsertCharacterCa
 		&i.SystemPrompt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HeartPrompt,
+		&i.ReasonPrompt,
+		&i.AlternateGreetings,
+		&i.PostHistoryInstructions,
+		&i.Lorebook,
+		&i.Tools,
+		&i.ExpressionFolderID,
+		&i.CreatorNotes,
+		&i.SourceFormat,
+		&i.Extensions,
 	)
 	return i, err
 }
@@ -544,35 +727,18 @@ SELECT b.id, b.identity_id, b.label, b.card_id, b.media_folder_id, b.enabled, b.
        b.total_token_limit, b.total_reply_limit, b.window_seconds, b.window_token_limit,
        b.window_reply_limit, b.conv_reply_limit, b.conv_min_interval_seconds, b.conv_media_limit,
        b.reply_delay_min_ms, b.reply_delay_max_ms, b.typing_ms_per_char, b.bottle_interval_seconds,
-       b.used_tokens, b.used_replies, b.created_at, b.updated_at,
+       b.used_tokens, b.used_replies, b.created_at, b.updated_at, b.core_mode, b.reason_model, b.memory_enabled,
        i.nickname, i.avatar_seed, i.public_code, i.gender, i.age, i.province, i.province_public,
        i.tags, i.clean_mode, i.match_gender, i.match_same_province, i.vip_until,
        COALESCE(cc.name, '')::text AS card_name,
        COALESCE(mf.name, '')::text AS folder_name,
-       COALESCE((
-           SELECT sum(bu.prompt_tokens + bu.completion_tokens)
-           FROM bot_usage bu
-           WHERE bu.bot_id = b.id
-             AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
-       ), 0)::bigint AS window_tokens,
-       COALESCE((
-           SELECT sum(bu.prompt_tokens)
-           FROM bot_usage bu
-           WHERE bu.bot_id = b.id
-             AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
-       ), 0)::bigint AS window_prompt_tokens,
-       COALESCE((
-           SELECT sum(bu.cached_tokens)
-           FROM bot_usage bu
-           WHERE bu.bot_id = b.id
-             AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
-       ), 0)::bigint AS window_cached_tokens,
-       COALESCE((
-           SELECT sum(bu.replies)
-           FROM bot_usage bu
-           WHERE bu.bot_id = b.id
-             AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
-       ), 0)::bigint AS window_replies,
+       COALESCE(u.window_tokens, 0)::bigint AS window_tokens,
+       COALESCE(u.window_prompt_tokens, 0)::bigint AS window_prompt_tokens,
+       COALESCE(u.window_cached_tokens, 0)::bigint AS window_cached_tokens,
+       COALESCE(u.window_replies, 0)::bigint AS window_replies,
+       COALESCE(u.window_reason_tokens, 0)::bigint AS window_reason_tokens,
+       COALESCE(u.window_memory_tokens, 0)::bigint AS window_memory_tokens,
+       (SELECT count(*) FROM bot_peer_memories m WHERE m.bot_id = b.id)::bigint AS memory_count,
        COALESCE((
            SELECT count(*)
            FROM conversations c
@@ -583,6 +749,17 @@ FROM bots b
 JOIN identities i ON i.id = b.identity_id
 LEFT JOIN character_cards cc ON cc.id = b.card_id
 LEFT JOIN media_folders mf ON mf.id = b.media_folder_id
+LEFT JOIN LATERAL (
+    SELECT sum(bu.prompt_tokens + bu.completion_tokens) AS window_tokens,
+           sum(bu.prompt_tokens) AS window_prompt_tokens,
+           sum(bu.cached_tokens) AS window_cached_tokens,
+           sum(bu.replies) AS window_replies,
+           sum(bu.prompt_tokens + bu.completion_tokens) FILTER (WHERE bu.kind = 'reason') AS window_reason_tokens,
+           sum(bu.prompt_tokens + bu.completion_tokens) FILTER (WHERE bu.kind = 'memory') AS window_memory_tokens
+    FROM bot_usage bu
+    WHERE bu.bot_id = b.id
+      AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
+) u ON true
 ORDER BY b.created_at DESC
 `
 
@@ -615,6 +792,9 @@ type ListBotsRow struct {
 	UsedReplies            int64              `json:"used_replies"`
 	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+	CoreMode               string             `json:"core_mode"`
+	ReasonModel            string             `json:"reason_model"`
+	MemoryEnabled          bool               `json:"memory_enabled"`
 	Nickname               string             `json:"nickname"`
 	AvatarSeed             string             `json:"avatar_seed"`
 	PublicCode             string             `json:"public_code"`
@@ -633,6 +813,9 @@ type ListBotsRow struct {
 	WindowPromptTokens     int64              `json:"window_prompt_tokens"`
 	WindowCachedTokens     int64              `json:"window_cached_tokens"`
 	WindowReplies          int64              `json:"window_replies"`
+	WindowReasonTokens     int64              `json:"window_reason_tokens"`
+	WindowMemoryTokens     int64              `json:"window_memory_tokens"`
+	MemoryCount            int64              `json:"memory_count"`
 	ActiveMatches          int64              `json:"active_matches"`
 }
 
@@ -676,6 +859,9 @@ func (q *Queries) ListBots(ctx context.Context) ([]ListBotsRow, error) {
 			&i.UsedReplies,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CoreMode,
+			&i.ReasonModel,
+			&i.MemoryEnabled,
 			&i.Nickname,
 			&i.AvatarSeed,
 			&i.PublicCode,
@@ -694,7 +880,42 @@ func (q *Queries) ListBots(ctx context.Context) ([]ListBotsRow, error) {
 			&i.WindowPromptTokens,
 			&i.WindowCachedTokens,
 			&i.WindowReplies,
+			&i.WindowReasonTokens,
+			&i.WindowMemoryTokens,
+			&i.MemoryCount,
 			&i.ActiveMatches,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCardExpressions = `-- name: ListCardExpressions :many
+SELECT id, card_id, key, description, media_item_id, sort, created_at FROM card_expressions WHERE card_id = $1 ORDER BY sort, key
+`
+
+func (q *Queries) ListCardExpressions(ctx context.Context, cardID pgtype.UUID) ([]CardExpression, error) {
+	rows, err := q.db.Query(ctx, listCardExpressions, cardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CardExpression{}
+	for rows.Next() {
+		var i CardExpression
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.Key,
+			&i.Description,
+			&i.MediaItemID,
+			&i.Sort,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -708,8 +929,7 @@ func (q *Queries) ListBots(ctx context.Context) ([]ListBotsRow, error) {
 
 const listCharacterCards = `-- name: ListCharacterCards :many
 
-SELECT id, name, description, personality, scenario, first_message, example_dialogue, system_prompt,
-       created_at, updated_at
+SELECT id, name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at, heart_prompt, reason_prompt, alternate_greetings, post_history_instructions, lorebook, tools, expression_folder_id, creator_notes, source_format, extensions
 FROM character_cards
 ORDER BY created_at DESC
 `
@@ -735,6 +955,16 @@ func (q *Queries) ListCharacterCards(ctx context.Context) ([]CharacterCard, erro
 			&i.SystemPrompt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.HeartPrompt,
+			&i.ReasonPrompt,
+			&i.AlternateGreetings,
+			&i.PostHistoryInstructions,
+			&i.Lorebook,
+			&i.Tools,
+			&i.ExpressionFolderID,
+			&i.CreatorNotes,
+			&i.SourceFormat,
+			&i.Extensions,
 		); err != nil {
 			return nil, err
 		}
@@ -752,7 +982,7 @@ SELECT id, identity_id, label, card_id, media_folder_id, enabled, model, tempera
        total_token_limit, total_reply_limit, window_seconds, window_token_limit,
        window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
        reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-       used_tokens, used_replies, created_at, updated_at
+       used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 FROM bots
 WHERE enabled
 ORDER BY id
@@ -796,6 +1026,9 @@ func (q *Queries) ListEnabledBots(ctx context.Context) ([]Bot, error) {
 			&i.UsedReplies,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.CoreMode,
+			&i.ReasonModel,
+			&i.MemoryEnabled,
 		); err != nil {
 			return nil, err
 		}
@@ -845,7 +1078,7 @@ RETURNING id, identity_id, label, card_id, media_folder_id, enabled, model, temp
           total_token_limit, total_reply_limit, window_seconds, window_token_limit,
           window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
           reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-          used_tokens, used_replies, created_at, updated_at
+          used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 `
 
 func (q *Queries) ResetBotUsage(ctx context.Context, id pgtype.UUID) (Bot, error) {
@@ -880,6 +1113,47 @@ func (q *Queries) ResetBotUsage(ctx context.Context, id pgtype.UUID) (Bot, error
 		&i.UsedReplies,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CoreMode,
+		&i.ReasonModel,
+		&i.MemoryEnabled,
+	)
+	return i, err
+}
+
+const setCardExpressionFolder = `-- name: SetCardExpressionFolder :one
+UPDATE character_cards SET expression_folder_id = $2, updated_at = now()
+WHERE id = $1 RETURNING id, name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at, heart_prompt, reason_prompt, alternate_greetings, post_history_instructions, lorebook, tools, expression_folder_id, creator_notes, source_format, extensions
+`
+
+type SetCardExpressionFolderParams struct {
+	ID                 pgtype.UUID `json:"id"`
+	ExpressionFolderID pgtype.UUID `json:"expression_folder_id"`
+}
+
+func (q *Queries) SetCardExpressionFolder(ctx context.Context, arg SetCardExpressionFolderParams) (CharacterCard, error) {
+	row := q.db.QueryRow(ctx, setCardExpressionFolder, arg.ID, arg.ExpressionFolderID)
+	var i CharacterCard
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Personality,
+		&i.Scenario,
+		&i.FirstMessage,
+		&i.ExampleDialogue,
+		&i.SystemPrompt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HeartPrompt,
+		&i.ReasonPrompt,
+		&i.AlternateGreetings,
+		&i.PostHistoryInstructions,
+		&i.Lorebook,
+		&i.Tools,
+		&i.ExpressionFolderID,
+		&i.CreatorNotes,
+		&i.SourceFormat,
+		&i.Extensions,
 	)
 	return i, err
 }
@@ -933,6 +1207,9 @@ SET label = $2,
     reply_delay_max_ms = $21,
     typing_ms_per_char = $22,
     bottle_interval_seconds = $23,
+    core_mode = $24,
+    reason_model = $25,
+    memory_enabled = $26,
     updated_at = now()
 WHERE id = $1
 RETURNING id, identity_id, label, card_id, media_folder_id, enabled, model, temperature,
@@ -940,7 +1217,7 @@ RETURNING id, identity_id, label, card_id, media_folder_id, enabled, model, temp
           total_token_limit, total_reply_limit, window_seconds, window_token_limit,
           window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
           reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-          used_tokens, used_replies, created_at, updated_at
+          used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 `
 
 type UpdateBotParams struct {
@@ -967,6 +1244,9 @@ type UpdateBotParams struct {
 	ReplyDelayMaxMs        int32       `json:"reply_delay_max_ms"`
 	TypingMsPerChar        int32       `json:"typing_ms_per_char"`
 	BottleIntervalSeconds  int32       `json:"bottle_interval_seconds"`
+	CoreMode               string      `json:"core_mode"`
+	ReasonModel            string      `json:"reason_model"`
+	MemoryEnabled          bool        `json:"memory_enabled"`
 }
 
 func (q *Queries) UpdateBot(ctx context.Context, arg UpdateBotParams) (Bot, error) {
@@ -994,6 +1274,9 @@ func (q *Queries) UpdateBot(ctx context.Context, arg UpdateBotParams) (Bot, erro
 		arg.ReplyDelayMaxMs,
 		arg.TypingMsPerChar,
 		arg.BottleIntervalSeconds,
+		arg.CoreMode,
+		arg.ReasonModel,
+		arg.MemoryEnabled,
 	)
 	var i Bot
 	err := row.Scan(
@@ -1025,6 +1308,9 @@ func (q *Queries) UpdateBot(ctx context.Context, arg UpdateBotParams) (Bot, erro
 		&i.UsedReplies,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CoreMode,
+		&i.ReasonModel,
+		&i.MemoryEnabled,
 	)
 	return i, err
 }
@@ -1044,11 +1330,14 @@ SET enabled = $1,
     timezone = $11,
     updated_by = $12,
     persona_mode = $13,
+    reason_model = $14,
+    memory_model = $15,
+    memory_retention_days = $16,
+    memory_extract_every = $17,
+    ooc_guard = $18,
     updated_at = now()
 WHERE id = 1
-RETURNING id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model,
-          llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone,
-          updated_by, updated_at, persona_mode
+RETURNING id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model, llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone, updated_by, updated_at, persona_mode, reason_model, memory_model, memory_retention_days, memory_extract_every, ooc_guard
 `
 
 type UpdateBotSettingsParams struct {
@@ -1065,6 +1354,11 @@ type UpdateBotSettingsParams struct {
 	Timezone             string      `json:"timezone"`
 	UpdatedBy            pgtype.UUID `json:"updated_by"`
 	PersonaMode          string      `json:"persona_mode"`
+	ReasonModel          string      `json:"reason_model"`
+	MemoryModel          string      `json:"memory_model"`
+	MemoryRetentionDays  int32       `json:"memory_retention_days"`
+	MemoryExtractEvery   int32       `json:"memory_extract_every"`
+	OocGuard             bool        `json:"ooc_guard"`
 }
 
 func (q *Queries) UpdateBotSettings(ctx context.Context, arg UpdateBotSettingsParams) (BotSetting, error) {
@@ -1082,6 +1376,11 @@ func (q *Queries) UpdateBotSettings(ctx context.Context, arg UpdateBotSettingsPa
 		arg.Timezone,
 		arg.UpdatedBy,
 		arg.PersonaMode,
+		arg.ReasonModel,
+		arg.MemoryModel,
+		arg.MemoryRetentionDays,
+		arg.MemoryExtractEvery,
+		arg.OocGuard,
 	)
 	var i BotSetting
 	err := row.Scan(
@@ -1100,6 +1399,43 @@ func (q *Queries) UpdateBotSettings(ctx context.Context, arg UpdateBotSettingsPa
 		&i.UpdatedBy,
 		&i.UpdatedAt,
 		&i.PersonaMode,
+		&i.ReasonModel,
+		&i.MemoryModel,
+		&i.MemoryRetentionDays,
+		&i.MemoryExtractEvery,
+		&i.OocGuard,
+	)
+	return i, err
+}
+
+const updateCardExpression = `-- name: UpdateCardExpression :one
+UPDATE card_expressions SET key = $2, description = $3, sort = $4
+WHERE id = $1 RETURNING id, card_id, key, description, media_item_id, sort, created_at
+`
+
+type UpdateCardExpressionParams struct {
+	ID          pgtype.UUID `json:"id"`
+	Key         string      `json:"key"`
+	Description string      `json:"description"`
+	Sort        int32       `json:"sort"`
+}
+
+func (q *Queries) UpdateCardExpression(ctx context.Context, arg UpdateCardExpressionParams) (CardExpression, error) {
+	row := q.db.QueryRow(ctx, updateCardExpression,
+		arg.ID,
+		arg.Key,
+		arg.Description,
+		arg.Sort,
+	)
+	var i CardExpression
+	err := row.Scan(
+		&i.ID,
+		&i.CardID,
+		&i.Key,
+		&i.Description,
+		&i.MediaItemID,
+		&i.Sort,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -1113,21 +1449,40 @@ SET name = $2,
     first_message = $6,
     example_dialogue = $7,
     system_prompt = $8,
+    heart_prompt = $9,
+    reason_prompt = $10,
+    alternate_greetings = $11,
+    post_history_instructions = $12,
+    lorebook = $13,
+    tools = $14,
+    expression_folder_id = $15,
+    creator_notes = $16,
+    source_format = $17,
+    extensions = $18,
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, description, personality, scenario, first_message, example_dialogue, system_prompt,
-          created_at, updated_at
+RETURNING id, name, description, personality, scenario, first_message, example_dialogue, system_prompt, created_at, updated_at, heart_prompt, reason_prompt, alternate_greetings, post_history_instructions, lorebook, tools, expression_folder_id, creator_notes, source_format, extensions
 `
 
 type UpdateCharacterCardParams struct {
-	ID              pgtype.UUID `json:"id"`
-	Name            string      `json:"name"`
-	Description     string      `json:"description"`
-	Personality     string      `json:"personality"`
-	Scenario        string      `json:"scenario"`
-	FirstMessage    string      `json:"first_message"`
-	ExampleDialogue string      `json:"example_dialogue"`
-	SystemPrompt    string      `json:"system_prompt"`
+	ID                      pgtype.UUID `json:"id"`
+	Name                    string      `json:"name"`
+	Description             string      `json:"description"`
+	Personality             string      `json:"personality"`
+	Scenario                string      `json:"scenario"`
+	FirstMessage            string      `json:"first_message"`
+	ExampleDialogue         string      `json:"example_dialogue"`
+	SystemPrompt            string      `json:"system_prompt"`
+	HeartPrompt             string      `json:"heart_prompt"`
+	ReasonPrompt            string      `json:"reason_prompt"`
+	AlternateGreetings      []string    `json:"alternate_greetings"`
+	PostHistoryInstructions string      `json:"post_history_instructions"`
+	Lorebook                []byte      `json:"lorebook"`
+	Tools                   []string    `json:"tools"`
+	ExpressionFolderID      pgtype.UUID `json:"expression_folder_id"`
+	CreatorNotes            string      `json:"creator_notes"`
+	SourceFormat            string      `json:"source_format"`
+	Extensions              []byte      `json:"extensions"`
 }
 
 func (q *Queries) UpdateCharacterCard(ctx context.Context, arg UpdateCharacterCardParams) (CharacterCard, error) {
@@ -1140,6 +1495,16 @@ func (q *Queries) UpdateCharacterCard(ctx context.Context, arg UpdateCharacterCa
 		arg.FirstMessage,
 		arg.ExampleDialogue,
 		arg.SystemPrompt,
+		arg.HeartPrompt,
+		arg.ReasonPrompt,
+		arg.AlternateGreetings,
+		arg.PostHistoryInstructions,
+		arg.Lorebook,
+		arg.Tools,
+		arg.ExpressionFolderID,
+		arg.CreatorNotes,
+		arg.SourceFormat,
+		arg.Extensions,
 	)
 	var i CharacterCard
 	err := row.Scan(
@@ -1153,6 +1518,16 @@ func (q *Queries) UpdateCharacterCard(ctx context.Context, arg UpdateCharacterCa
 		&i.SystemPrompt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HeartPrompt,
+		&i.ReasonPrompt,
+		&i.AlternateGreetings,
+		&i.PostHistoryInstructions,
+		&i.Lorebook,
+		&i.Tools,
+		&i.ExpressionFolderID,
+		&i.CreatorNotes,
+		&i.SourceFormat,
+		&i.Extensions,
 	)
 	return i, err
 }

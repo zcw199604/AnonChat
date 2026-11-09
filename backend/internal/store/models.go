@@ -165,6 +165,40 @@ type Bot struct {
 	UsedReplies            int64              `json:"used_replies"`
 	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+	CoreMode               string             `json:"core_mode"`
+	ReasonModel            string             `json:"reason_model"`
+	MemoryEnabled          bool               `json:"memory_enabled"`
+}
+
+type BotMemoryCursor struct {
+	ConversationID pgtype.UUID        `json:"conversation_id"`
+	BotID          pgtype.UUID        `json:"bot_id"`
+	ExtractedUntil pgtype.Timestamptz `json:"extracted_until"`
+	FailCount      int32              `json:"fail_count"`
+	NextTryAt      pgtype.Timestamptz `json:"next_try_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
+type BotPeerEvent struct {
+	ID             pgtype.UUID        `json:"id"`
+	BotID          pgtype.UUID        `json:"bot_id"`
+	PeerIdentityID pgtype.UUID        `json:"peer_identity_id"`
+	ConversationID pgtype.UUID        `json:"conversation_id"`
+	Gist           string             `json:"gist"`
+	Tags           []string           `json:"tags"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type BotPeerMemory struct {
+	BotID             pgtype.UUID        `json:"bot_id"`
+	PeerIdentityID    pgtype.UUID        `json:"peer_identity_id"`
+	Profile           []byte             `json:"profile"`
+	Affinity          int16              `json:"affinity"`
+	MoodLabel         string             `json:"mood_label"`
+	MoodValue         int16              `json:"mood_value"`
+	LastInteractionAt pgtype.Timestamptz `json:"last_interaction_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type BotSetting struct {
@@ -183,6 +217,11 @@ type BotSetting struct {
 	UpdatedBy            pgtype.UUID        `json:"updated_by"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 	PersonaMode          string             `json:"persona_mode"`
+	ReasonModel          string             `json:"reason_model"`
+	MemoryModel          string             `json:"memory_model"`
+	MemoryRetentionDays  int32              `json:"memory_retention_days"`
+	MemoryExtractEvery   int32              `json:"memory_extract_every"`
+	OocGuard             bool               `json:"ooc_guard"`
 }
 
 type BotUsage struct {
@@ -194,6 +233,7 @@ type BotUsage struct {
 	CachedTokens     int32              `json:"cached_tokens"`
 	Replies          int32              `json:"replies"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	Kind             string             `json:"kind"`
 }
 
 type Bottle struct {
@@ -226,17 +266,37 @@ type Broadcast struct {
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
 
+type CardExpression struct {
+	ID          pgtype.UUID        `json:"id"`
+	CardID      pgtype.UUID        `json:"card_id"`
+	Key         string             `json:"key"`
+	Description string             `json:"description"`
+	MediaItemID pgtype.UUID        `json:"media_item_id"`
+	Sort        int32              `json:"sort"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type CharacterCard struct {
-	ID              pgtype.UUID        `json:"id"`
-	Name            string             `json:"name"`
-	Description     string             `json:"description"`
-	Personality     string             `json:"personality"`
-	Scenario        string             `json:"scenario"`
-	FirstMessage    string             `json:"first_message"`
-	ExampleDialogue string             `json:"example_dialogue"`
-	SystemPrompt    string             `json:"system_prompt"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	ID                      pgtype.UUID        `json:"id"`
+	Name                    string             `json:"name"`
+	Description             string             `json:"description"`
+	Personality             string             `json:"personality"`
+	Scenario                string             `json:"scenario"`
+	FirstMessage            string             `json:"first_message"`
+	ExampleDialogue         string             `json:"example_dialogue"`
+	SystemPrompt            string             `json:"system_prompt"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	HeartPrompt             string             `json:"heart_prompt"`
+	ReasonPrompt            string             `json:"reason_prompt"`
+	AlternateGreetings      []string           `json:"alternate_greetings"`
+	PostHistoryInstructions string             `json:"post_history_instructions"`
+	Lorebook                []byte             `json:"lorebook"`
+	Tools                   []string           `json:"tools"`
+	ExpressionFolderID      pgtype.UUID        `json:"expression_folder_id"`
+	CreatorNotes            string             `json:"creator_notes"`
+	SourceFormat            string             `json:"source_format"`
+	Extensions              []byte             `json:"extensions"`
 }
 
 type Conversation struct {

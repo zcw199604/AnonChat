@@ -4,8 +4,10 @@ package jobs_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -263,5 +265,125 @@ func TestCleanBatchesOver5000(t *testing.T) {
 	}
 	if stats["messages"] != 5001 {
 		t.Errorf("messages 删除行数 = %d, 期望 5001（分批循环）", stats["messages"])
+	}
+}
+
+func TestCleanBotMemoriesAndCursors(t *testing.T) {
+	for _, retention := range []int{0, 7} {
+		t.Run(fmt.Sprintf("保留期%d天", retention), func(t *testing.T) {
+			pool := testutil.MustPool(t)
+			testutil.Truncate(t, pool)
+			now := time.Now().UTC().Truncate(time.Second)
+			if retention > 0 {
+				if _, err := pool.Exec(ctx, `INSERT INTO bot_settings (id, memory_retention_days) VALUES (1, $1)`, retention); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				retention = 30
+			}
+			bot := insertMemoryBot(t, pool)
+			expired := insertIdentity(t, pool, time.Time{})
+			recent := insertIdentity(t, pool, time.Time{})
+			revoked := insertIdentity(t, pool, now.Add(-time.Hour))
+			for _, item := range []struct {
+				id pgtype.UUID
+				at time.Time
+			}{{expired, now.Add(-time.Duration(retention)*24*time.Hour - time.Second)}, {recent, now.Add(-time.Duration(retention) * 24 * time.Hour)}, {revoked, now}} {
+				if _, err := pool.Exec(ctx, `INSERT INTO bot_peer_memories (bot_id, peer_identity_id, last_interaction_at) VALUES ($1,$2,$3)`, bot, item.id, ts(item.at)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pool.Exec(ctx, `INSERT INTO bot_peer_events (bot_id, peer_identity_id, gist) VALUES ($1,$2,'保留测试')`, bot, item.id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			old := insertConversation(t, pool, now.Add(-8*24*time.Hour-time.Second))
+			fresh := insertConversation(t, pool, now.Add(-8*24*time.Hour))
+			open := insertConversation(t, pool, time.Time{})
+			for _, conv := range []pgtype.UUID{old, fresh, open} {
+				// 留一条近期消息，避免旧会话清理的级联删除掩盖游标清理。
+				insertMessage(t, pool, conv, recent, now)
+				if _, err := pool.Exec(ctx, `INSERT INTO bot_memory_cursors (conversation_id, bot_id, extracted_until) VALUES ($1,$2,$3)`, conv, bot, ts(now)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cleaner := jobs.New(pool, testLogger(), jobs.Options{MessageRetention: 168 * time.Hour, AuditRetention: 4320 * time.Hour, BottleTTL: 168 * time.Hour}, jobs.WithClock(func() time.Time { return now }))
+			stats, err := cleaner.RunOnce(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"bot_memories_expired", "bot_memories_revoked", "bot_memory_cursors"} {
+				if stats[key] != 1 {
+					t.Errorf("%s 删除数 = %d，期望 1", key, stats[key])
+				}
+			}
+			if got := count(t, pool, `SELECT count(*) FROM bot_peer_memories WHERE peer_identity_id=$1`, recent); got != 1 {
+				t.Errorf("未过期画像应保留，实际 %d", got)
+			}
+			if got := count(t, pool, `SELECT count(*) FROM bot_peer_memories`); got != 1 {
+				t.Errorf("画像剩余 %d，期望 1", got)
+			}
+			if got := count(t, pool, `SELECT count(*) FROM bot_peer_events`); got != 1 {
+				t.Errorf("事件剩余 %d，期望级联后 1", got)
+			}
+			if got := count(t, pool, `SELECT count(*) FROM bot_memory_cursors WHERE conversation_id=$1`, old); got != 0 {
+				t.Error("旧游标应被删除")
+			}
+			if got := count(t, pool, `SELECT count(*) FROM bot_memory_cursors`); got != 2 {
+				t.Errorf("新游标与进行中游标应保留，实际 %d", got)
+			}
+		})
+	}
+}
+
+func insertMemoryBot(t *testing.T, pool *pgxpool.Pool) pgtype.UUID {
+	t.Helper()
+	identityID := insertIdentity(t, pool, time.Time{})
+	var id pgtype.UUID
+	if err := pool.QueryRow(ctx, `INSERT INTO bots (identity_id, label) VALUES ($1, '清理测试') RETURNING id`, identityID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestCleanBotMemoryFailureDoesNotBlockOtherTasks(t *testing.T) {
+	pool := testutil.MustPool(t)
+	testutil.Truncate(t, pool)
+	now := time.Now()
+	bot := insertMemoryBot(t, pool)
+	expired := insertIdentity(t, pool, time.Time{})
+	revoked := insertIdentity(t, pool, now.Add(-time.Hour))
+	if _, err := pool.Exec(ctx, `INSERT INTO bot_peer_memories (bot_id, peer_identity_id, last_interaction_at) VALUES ($1,$2,$3),($1,$4,$5)`, bot, expired, ts(now.Add(-31*24*time.Hour)), revoked, ts(now)); err != nil {
+		t.Fatal(err)
+	}
+	old := insertConversation(t, pool, now.Add(-9*24*time.Hour))
+	insertMessage(t, pool, old, revoked, now)
+	if _, err := pool.Exec(ctx, `INSERT INTO bot_memory_cursors (conversation_id, bot_id, extracted_until) VALUES ($1,$2,$3)`, old, bot, ts(now)); err != nil {
+		t.Fatal(err)
+	}
+	// 注入画像过期删除错误，确保身份清理与游标清理仍会执行。
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION fail_expired_memory_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+	BEGIN IF OLD.last_interaction_at < now() - interval '30 days' THEN RAISE EXCEPTION '画像秘密内容'; END IF; RETURN OLD; END $$;
+	CREATE TRIGGER fail_expired_memory_delete BEFORE DELETE ON bot_peer_memories FOR EACH ROW EXECUTE FUNCTION fail_expired_memory_delete()`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(ctx, `DROP TRIGGER fail_expired_memory_delete ON bot_peer_memories; DROP FUNCTION fail_expired_memory_delete()`); err != nil {
+			t.Error(err)
+		}
+	})
+	stats, err := newCleaner(pool).RunOnce(ctx)
+	if err == nil {
+		t.Error("单项失败应返回错误")
+	} else if strings.Contains(err.Error(), "画像秘密内容") {
+		t.Error("清理错误不得泄露记忆内容")
+	}
+	if stats["bot_memories_revoked"] != 1 || stats["bot_memory_cursors"] != 1 {
+		t.Errorf("其他清理应成功，stats=%v", stats)
+	}
+	if count(t, pool, `SELECT count(*) FROM bot_peer_memories WHERE peer_identity_id=$1`, revoked) != 0 {
+		t.Error("吊销身份画像应被删除")
+	}
+	if count(t, pool, `SELECT count(*) FROM bot_memory_cursors`) != 0 {
+		t.Error("旧游标应被删除")
 	}
 }

@@ -54,8 +54,6 @@ const (
 	llmRetryWait = time.Second
 	// llmMaxRetryAfter 是 Retry-After 的等待上限。
 	llmMaxRetryAfter = 5 * time.Second
-	// llmErrorBodyLogMax 是错误响应体最多记录的前缀字节数。
-	llmErrorBodyLogMax = 200
 )
 
 // sharedHTTPClient 是整个进程共用的 HTTP 客户端，复用连接（how.md §5）。
@@ -195,16 +193,9 @@ func (c *OpenAIClient) do(ctx context.Context, body []byte) (ChatResult, *time.D
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// 只记录状态码与错误响应体的前 200 字节；并再次兜底擦掉可能被回显的密钥。
-		prefix, _ := io.ReadAll(io.LimitReader(resp.Body, llmErrorBodyLogMax))
-		body := string(prefix)
-		if c.apiKey != "" {
-			body = strings.ReplaceAll(body, c.apiKey, "***")
-		}
-		c.logger.Warn("模型接口返回错误",
-			"status", resp.StatusCode,
-			"body_prefix", body,
-		)
+		// 上游可能回显请求或智核内容，错误响应正文一律不进入日志。
+		c.logger.Warn("模型接口返回错误", "status", resp.StatusCode)
+
 		err := fmt.Errorf("模型接口返回 %d", resp.StatusCode)
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
 			wait := c.retryAfter(resp)

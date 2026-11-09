@@ -1,7 +1,7 @@
 # 数据模型与保留期
 
 > 以代码为准。表结构见 `backend/migrations/*.sql` 与 `backend/internal/store/models.go`。
-> 最后同步：AI 机器人 + 媒体库（202611062351）。
+> 最后同步：Bot 人设包、双核驱动与长期记忆（202611092002）。
 
 ## 表结构
 
@@ -119,3 +119,25 @@
 - `rate_limit_rules`：`key text pk`、`limit_count int >=1`、`window_seconds int >=0`、`ban_seconds int >=-1`、`enabled boolean`、`updated_by → admin_users`（SET NULL）、`updated_at`。
 - 迁移插入全部默认规则；未知数据库 key 不参与运行，缺失 key 从代码默认值补齐。频率规则窗口至少 1 秒，并发规则窗口必须 0；不支持自动封禁的规则要求 `ban_seconds=0`。
 - `identities(created_ip, created_at)` 索引用于创建/换身份滚动计数；计数包含已撤销记录。清理保留期为 `AUDIT_RETENTION`，身份窗口不得超过该值。
+
+### 人设、表情与长期记忆（迁移 00009）
+
+依据：[Bot 人设包、双核驱动与长期记忆方案](../plan/202611092002_bot-persona-memory/how.md)；实际结构以 `00009_bot_persona_memory.sql` 为准，带完整 Down。
+
+- `character_cards` 新增 `heart_prompt`、`reason_prompt`、`alternate_greetings text[]`、`post_history_instructions`、`lorebook jsonb`、`tools text[]`、`expression_folder_id → media_folders`（SET NULL）、`creator_notes`、`source_format(manual|st|krp)`、`extensions jsonb`。来源和表情数只读；复制新卡不复制表情媒体，来源为 manual。
+- `card_expressions`：`id`、`card_id → character_cards`（CASCADE）、`key`（每卡唯一，1–32 字）、`description`（≤200 字）、`media_item_id → media_items`（CASCADE）、`sort`、`created_at`。删除表情同时删除媒体条目；删除卡片同时清理表情文件夹。表情按普通 image 发送，与其他媒体共用 `conv_media_limit`，允许重复，每轮最多一张。
+- `bots` 新增 `core_mode(single|dual)`（默认 single）、`reason_model`（默认空）、`memory_enabled`（默认 true）。
+- `bot_settings` 新增 `reason_model`、`memory_model`（均默认空）、`memory_retention_days`（默认30，1–365）、`memory_extract_every`（默认20，5–200）、`ooc_guard`（默认true）。无新环境变量；模型为空按方案 §2 回退。
+- `bot_usage.kind`：`reply`、`reason`、`memory`、`retry`，全部消耗计入总量与窗口；只有发送成功的 reply 计回复数。后台统计 `usage.windowReasonTokens` / `usage.windowMemoryTokens`，`memoryCount` 在 bot 顶层。
+- `bot_peer_memories`：主键 `(bot_id, peer_identity_id)`，两者外键均 CASCADE；`profile jsonb`、`affinity`（-100–100）、`mood_label`（≤10字）、`mood_value`（0–10）、`last_interaction_at`、`created_at`、`updated_at`。画像仅含 basic_info、interest、life、psychological、relationship、preference；每 topic 最多10子项，整体≤6000字节。画像值与事件摘要入库前清洗邮箱和长数字。
+- `bot_peer_events`：`id`、上述双键（引用画像，CASCADE）、`conversation_id`（SET NULL）、`gist`（1–120字）、`tags text[]`、`created_at`；每对裁剪为最新50条，回复注入最近8条。
+- `bot_memory_cursors`：`conversation_id` 主键（CASCADE）、`bot_id`（CASCADE）、`extracted_until`、`fail_count`、`next_try_at`、`updated_at`。失败退避，超限延后10分钟但不推进游标；已焚毁消息不进入候选输入。worker 每60秒串行处理至多20个候选。
+- 索引：`bot_peer_memories(last_interaction_at)`、`bot_peer_events(bot_id, peer_identity_id, created_at DESC)`。
+
+| 新增清理项 | 保留规则 |
+|---|---|
+| 画像及其事件 | 最后互动后默认30天，取 `bot_settings.memory_retention_days`；无设置行也按30天 |
+| 吊销身份的画像及事件 | 下次清理即删除，不与新匿名身份合并 |
+| 记忆游标 | 对应会话结束超过8天删除 |
+
+三项独立计数与日志，单项失败不阻止其他项。后台记忆接口挂 `RequireAdmin`，查看详情、删除、清空均审计；审计不记录画像或事件内容。

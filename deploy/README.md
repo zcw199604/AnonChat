@@ -1,6 +1,6 @@
 # AnonChat 部署说明
 
-> 以代码为准，最后同步于 V1。
+> 以代码为准，最后同步：Bot 人设包、双核驱动与长期记忆（202611092002）。
 
 本目录包含生产部署所需的 Compose 编排、Dockerfile、Caddy 配置、备份脚本与敏感词库挂载目录。
 
@@ -84,10 +84,10 @@ docker compose exec -it backend /server admin create --username admin
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `BOT_ENABLED` | `false` | `true` 时启动 bot 引擎（worker、匹配兜底、漂流瓶循环）；管理接口始终可用 |
+| `BOT_ENABLED` | `false` | 仅首次初始化全局开关；引擎始终运行，按后台开关与就绪状态工作 |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` | OpenAI 兼容接口地址（不带 `/chat/completions`） |
-| `LLM_API_KEY` | 空 | `BOT_ENABLED=true` 时必填 |
-| `LLM_MODEL` | 空 | 默认模型；`BOT_ENABLED=true` 时必填，单个 bot 可在后台覆盖 |
+| `LLM_API_KEY` | 空 | 启用模型调用时需提供 |
+| `LLM_MODEL` | 空 | 默认模型；启用模型调用时需提供，单个 bot 可在后台覆盖 |
 | `LLM_TIMEOUT` | `60s` | 单次请求超时 |
 | `LLM_SEND_CACHE_KEY` | `true` | 是否发 `prompt_cache_key`；服务商拒绝未知参数时设为 `false` |
 | `BOT_MATCH_FALLBACK_AFTER` | `10s` | 排队多久仍无真人配对时由 bot 兜底 |
@@ -137,4 +137,24 @@ docker compose exec -it backend /server admin create --username admin
 > 注意：当前仓库仅实现 `console` 短信提供方（仅开发用），生产环境禁止 `console`；接入真实服务商前，
 > 生产环境无法完成启动（配置校验会拒绝 console）。这属于任务 5.x / 12.3 的 HITL 事项。
 
-> **bot 不认角色卡、自称"AI 助手"时**：说明模型网关丢弃了 system 消息。在后台"全局设置"里把"人设注入方式"设为 `user`（默认值就是 user）。如果用的是思考型模型（例如 deepseek-flash），请在 bot 设置里把"输出 token 上限"调到 1000 左右，否则推理过程可能把额度用完，导致没有回复。
+> **人设注入**：运行时固定使用 `user`，旧 `system` 配置自动按 `user` 处理，后台不再提供切换选项。身份表述不被检测或改写。如果用的是思考型模型（例如 deepseek-flash），请在 bot 设置里把"输出 token 上限"调到 1000 左右，否则推理过程可能把额度用完，导致没有回复。
+
+## 8. 人设包、双核与长期记忆（00009）
+
+参见 [方案与接口](../helloagents/main/plan/202611092002_bot-persona-memory/how.md) 和 [任务状态](../helloagents/main/plan/202611092002_bot-persona-memory/task.md)。
+
+- **迁移 `00009_bot_persona_memory.sql` 随 backend 启动自动执行**，包含角色卡扩展、表情、画像、事件、游标和用量类型；无需另启服务或新增环境变量。更新前先执行第4节的数据库备份，同时备份媒体卷和 `SETTINGS_ENC_KEY`。
+- 在现有后台「Bot 配置 → 全局设置」维护新增项；保存后刷新引擎，无需重启：
+
+| 设置 | JSON 字段 | 默认值 / 范围 |
+|---|---|---|
+| 智核默认模型 | `reasonModel` | 空，回退心核模型；单个 bot 的智核模型优先 |
+| 记忆模型 | `memoryModel` | 空，回退全局默认模型 |
+| 记忆保留天数 | `memoryRetentionDays` | **30**，1–365天；从最后互动起算 |
+| 记忆抽取间隔 | `memoryExtractEvery` | 20，5–200条；结束或空闲也会触发 |
+| 跑偏检测 | `oocGuard` | true，最多重写一次，不处理 AI 身份表述 |
+
+- Bot 默认 `coreMode=single`、`reasonModel=""`、`memoryEnabled=true`；双核每轮至少多一次模型调用，失败按本轮单核回复。用量按 reply/reason/memory/retry 统计并受限额约束。
+- 表情以普通图片发送，每轮最多一张，和其他媒体共享 `conv_media_limit`，收到新输入则跳过。复制角色卡不复制表情媒体，新卡来源为手动。
+- 记忆按 bot 与对方身份隔离；画像及事件在最后互动超过保留期后由清理任务删除，设置缺行时仍按30天。身份吊销后下次清理删除；已结束超过8天的抽取游标清理。后台可查看、删除或清空，敏感内容不写日志/审计。
+- 部署前仍需由人工完成 P11.2 的真实模型验收；本轮最终验证只运行本机测试，不连接远程模型。

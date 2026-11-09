@@ -46,6 +46,22 @@ func (q *Queries) DeleteEmptyEndedConversations(ctx context.Context, endedAt pgt
 	return result.RowsAffected(), nil
 }
 
+const deleteExpiredBotMemories = `-- name: DeleteExpiredBotMemories :execrows
+
+DELETE FROM bot_peer_memories
+WHERE last_interaction_at < $1::timestamptz
+    - make_interval(days => COALESCE((SELECT memory_retention_days FROM bot_settings WHERE id = 1), 30))
+`
+
+// ---- Bot 长期记忆（截止时间由清理器时钟注入）----
+func (q *Queries) DeleteExpiredBotMemories(ctx context.Context, nowAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredBotMemories, nowAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteExpiredBottles = `-- name: DeleteExpiredBottles :execrows
 WITH batch AS (
     SELECT b.id FROM bottles b WHERE b.expires_at < $1 LIMIT 5000
@@ -122,6 +138,19 @@ func (q *Queries) DeleteOldAccessLogs(ctx context.Context, createdAt pgtype.Time
 	return result.RowsAffected(), nil
 }
 
+const deleteOldBotMemoryCursors = `-- name: DeleteOldBotMemoryCursors :execrows
+DELETE FROM bot_memory_cursors mc USING conversations c
+WHERE c.id = mc.conversation_id AND c.ended_at < $1
+`
+
+func (q *Queries) DeleteOldBotMemoryCursors(ctx context.Context, endedAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldBotMemoryCursors, endedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteOldBotUsage = `-- name: DeleteOldBotUsage :execrows
 
 DELETE FROM bot_usage WHERE created_at < $1
@@ -186,6 +215,19 @@ WHERE conversation_id IN (
 
 func (q *Queries) DeletePrivateLinksForEmptyEndedConversations(ctx context.Context, endedAt pgtype.Timestamptz) (int64, error) {
 	result, err := q.db.Exec(ctx, deletePrivateLinksForEmptyEndedConversations, endedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteRevokedBotMemories = `-- name: DeleteRevokedBotMemories :execrows
+DELETE FROM bot_peer_memories m USING identities i
+WHERE i.id = m.peer_identity_id AND i.revoked_at IS NOT NULL
+`
+
+func (q *Queries) DeleteRevokedBotMemories(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRevokedBotMemories)
 	if err != nil {
 		return 0, err
 	}

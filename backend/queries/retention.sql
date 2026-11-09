@@ -87,3 +87,18 @@ DELETE FROM broadcasts WHERE id IN (SELECT id FROM batch);
 
 -- name: DeleteOldBotUsage :execrows
 DELETE FROM bot_usage WHERE created_at < $1;
+
+-- ---- Bot 长期记忆（截止时间由清理器时钟注入）----
+
+-- name: DeleteExpiredBotMemories :execrows
+DELETE FROM bot_peer_memories
+WHERE last_interaction_at < sqlc.arg(now_at)::timestamptz
+    - make_interval(days => COALESCE((SELECT memory_retention_days FROM bot_settings WHERE id = 1), 30));
+
+-- name: DeleteRevokedBotMemories :execrows
+DELETE FROM bot_peer_memories m USING identities i
+WHERE i.id = m.peer_identity_id AND i.revoked_at IS NOT NULL;
+
+-- name: DeleteOldBotMemoryCursors :execrows
+DELETE FROM bot_memory_cursors mc USING conversations c
+WHERE c.id = mc.conversation_id AND c.ended_at < $1;

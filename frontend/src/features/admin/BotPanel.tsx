@@ -183,6 +183,26 @@ function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
               onChange={(e) => setForm({ ...form, model: e.target.value })}
             />
           </label>
+          <label className="block space-y-1">
+            <span className="text-xs text-lobby-sub">智核默认模型</span>
+            <input aria-label="智核默认模型" className={`w-full ${inputCls}`} placeholder="留空使用心核模型"
+              value={form.reasonModel} onChange={(e) => setForm({ ...form, reasonModel: e.target.value })} />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs text-lobby-sub">记忆模型</span>
+            <input aria-label="记忆模型" className={`w-full ${inputCls}`} placeholder="留空使用默认模型"
+              value={form.memoryModel} onChange={(e) => setForm({ ...form, memoryModel: e.target.value })} />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs text-lobby-sub">记忆保留天数（1–365）</span>
+            <input aria-label="记忆保留天数" type="number" min="1" max="365" step="1" className={`w-full ${inputCls}`}
+              value={form.memoryRetentionDays} onChange={(e) => setForm({ ...form, memoryRetentionDays: e.target.value })} />
+          </label>
+          <label className="block space-y-1">
+            <span className="text-xs text-lobby-sub">记忆抽取间隔（5–200 条）</span>
+            <input aria-label="记忆抽取间隔" type="number" min="5" max="200" step="1" className={`w-full ${inputCls}`}
+              value={form.memoryExtractEvery} onChange={(e) => setForm({ ...form, memoryExtractEvery: e.target.value })} />
+          </label>
           <label className="block space-y-1 sm:col-span-2">
             <span className="text-xs text-lobby-sub">API Key</span>
             <div className="flex gap-2">
@@ -273,6 +293,10 @@ function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
             发送 prompt_cache_key
           </label>
           <span className="text-lobby-sub">服务商拒绝未知参数时请关闭</span>
+          <label className="flex items-center gap-2">
+            <Toggle checked={form.oocGuard} onChange={(v) => setForm({ ...form, oocGuard: v })} label="跑偏检测" />
+            跑偏检测
+          </label>
         </div>
 
         {errors.length > 0 && <div className="text-xs text-danger">{errors.join('；')}</div>}

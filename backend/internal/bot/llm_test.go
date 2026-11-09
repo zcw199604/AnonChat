@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"github.com/anonchat/anonchat/backend/internal/store"
 	"io"
 	"log/slog"
 	"net/http"
@@ -272,7 +273,7 @@ func TestChatLogsDoNotLeakSecrets(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		// 错误响应体很长：日志里最多记录前 200 字节。
+		// 即使错误响应体很长，也不能记录正文。
 		_, _ = w.Write([]byte(strings.Repeat("E", 1000)))
 	}))
 	defer srv.Close()
@@ -288,8 +289,8 @@ func TestChatLogsDoNotLeakSecrets(t *testing.T) {
 	if strings.Contains(logged, "你好") {
 		t.Error("日志中出现了消息正文")
 	}
-	if n := strings.Count(logged, "E"); n > llmErrorBodyLogMax {
-		t.Errorf("错误响应体记录了 %d 字节, 超过上限 %d", n, llmErrorBodyLogMax)
+	if strings.Contains(logged, strings.Repeat("E", 10)) {
+		t.Error("日志中出现了错误响应正文")
 	}
 }
 
@@ -321,5 +322,32 @@ func TestChatLogsDoNotEchoKey(t *testing.T) {
 
 	if strings.Contains(buf.String(), "sk-echo-secret") {
 		t.Fatalf("日志里出现了被回显的 API Key: %s", buf.String())
+	}
+}
+
+// TestChatErrorLogsNeverEchoContent 防止上游错误回显请求、记忆或智核内容。
+func TestChatErrorLogsNeverEchoContent(t *testing.T) {
+	var logs strings.Builder
+	secrets := []string{"消息正文秘密", "画像秘密", "事件秘密", "智核想法秘密", "回复要点秘密", "sk-echo-secret"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(strings.Join(secrets, " ")))
+	}))
+	defer srv.Close()
+	client := NewOpenAIClient(ClientOptions{BaseURL: srv.URL, APIKey: secrets[5], Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	_, _ = client.Chat(context.Background(), testRequest(""))
+	for _, secret := range secrets {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("错误日志含敏感内容 %q", secret)
+		}
+	}
+}
+
+// TestEmptyOutputLogsNeverEchoFinishReason 防止任意上游字段绕过正文日志限制。
+func TestEmptyOutputLogsNeverEchoFinishReason(t *testing.T) {
+	var logs strings.Builder
+	warnEmptyOutput(slog.New(slog.NewTextHandler(&logs, nil)), store.Bot{}, ChatResult{FinishReason: "智核输出秘密 sk-secret"})
+	if strings.Contains(logs.String(), "秘密") || strings.Contains(logs.String(), "sk-secret") {
+		t.Error("日志回显了上游任意 finish_reason")
 	}
 }

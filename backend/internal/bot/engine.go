@@ -79,6 +79,7 @@ type Engine struct {
 	llmOverride LLM
 	// settings 是"生效配置"的内存缓存（开关、模型接入、兜底时间、瓶龄、时区）。
 	settings *SettingsCache
+	memory   *MemoryWorker
 	// bottles 为 nil 时不启动漂流瓶循环。
 	bottles    BottleService
 	bottleLoop time.Duration
@@ -171,6 +172,7 @@ func NewEngine(pool *pgxpool.Pool, logger *slog.Logger, conv *conversation.Servi
 	for _, o := range opts {
 		o(e)
 	}
+	e.memory = NewMemoryWorker(e)
 	return e
 }
 
@@ -247,6 +249,13 @@ func (e *Engine) Run(ctx context.Context) {
 	if e.bottles != nil {
 		go e.runBottleLoop(ctx)
 	}
+	// 记忆抽取单独串行运行，退出时等待它结束，避免留下后台调用。
+	memoryDone := make(chan struct{})
+	go func() {
+		defer close(memoryDone)
+		e.memory.Run(ctx)
+	}()
+	defer func() { <-memoryDone }()
 
 	ticker := time.NewTicker(e.refreshEvery)
 	defer ticker.Stop()
@@ -367,6 +376,12 @@ func (e *Engine) OnMessage(ev conversation.MessageEvent) {
 		return
 	}
 	convID := ev.ConversationID
+	// 表情发送只读内存中的打断标记，不能等待下面的异步查询完成。
+	e.mu.Lock()
+	if st := e.convs[convID]; st != nil && st.running && st.bot.IdentityID != ev.SenderIdentityID {
+		st.dirty = true
+	}
+	e.mu.Unlock()
 	e.wg.Add(1)
 	go func() {
 		defer e.wg.Done()
@@ -383,6 +398,9 @@ func (e *Engine) OnMessage(ev conversation.MessageEvent) {
 // OnConversationEnded 停止计时器并删除会话状态；立即返回。
 func (e *Engine) OnConversationEnded(conversationID pgtype.UUID) {
 	e.forgetConv(conversationID)
+	if e.memory != nil {
+		e.memory.Notify()
+	}
 }
 
 // BotMatched 由匹配兜底的 provider 调用：读消息延迟后，若会话里还没有任何消息就执行开场。
@@ -666,32 +684,68 @@ func (e *Engine) runTurn(convID pgtype.UUID, opening bool) {
 		return
 	}
 
-	// 开场：角色卡有开场白时直接发送，不调用模型（token 记 0）。
-	if opening && card != nil && strings.TrimSpace(card.FirstMessage) != "" {
-		replied := e.sendBubble(ctx, turn, Bubble{Kind: "text", Text: strings.TrimSpace(card.FirstMessage)})
-		e.recordUsage(ctx, bot, convID, ChatResult{}, replied)
-		return
-	}
-
 	in, err := e.buildPromptInput(ctx, turn, card, opening)
 	if err != nil {
-		e.logger.Warn("组装提示词失败", "bot_id", bot.ID.String(), "error", err)
+		e.logger.Warn("组装提示词失败", "bot_id", bot.ID.String())
 		return
 	}
-	res, err := e.chat(ctx, bot, in)
+	// 开场从主开场白和备选项中选择；没有开场白时只走心核。
+	if opening {
+		if greeting := pickGreeting(in.Card, e.pacer.rnd); greeting != "" {
+			replied := e.sendBubble(ctx, turn, Bubble{Kind: "text", Text: greeting})
+			e.recordUsage(ctx, bot, convID, ChatResult{}, replied, "reply")
+			if replied {
+				e.touchAfterReply(ctx, bot, turn.peerID, nil)
+			}
+			return
+		}
+	}
+	var reason *ReasonOutput
+	if !opening && in.CoreMode == "dual" {
+		reason = e.runReason(ctx, bot, convID, turn.peerID, in)
+	}
+	if reason == nil {
+		in.CoreMode = "single"
+	} else {
+		in.ReasonNotes = &ReasonResult{Thought: reason.Thought, Guidance: reason.Guidance, Expression: reason.Expression}
+		if reason.Silent {
+			// 沉默也是智核的有效决定，只应用关系变化，不记一次回复。
+			e.touchAfterReply(ctx, bot, turn.peerID, reason)
+			return
+		}
+	}
+	bubbles, calls, err := e.chatStyled(ctx, bot, in)
 	if err != nil {
-		// 调用失败：本轮不回复（是否记录用量由调用方结果决定）。
-		e.logger.Warn("bot 调用模型失败", "bot_id", bot.ID.String(), "error", err)
+		e.recordCalls(ctx, bot, convID, calls, false)
+		e.logger.Warn("bot 调用模型失败", "bot_id", bot.ID.String())
 		return
 	}
-	warnEmptyOutput(e.logger, bot, res)
 	replied := false
-	for _, bubble := range ParseReply(res.Content) {
+	expression := ""
+	if reason != nil {
+		expression = reason.Expression
+	}
+	for _, bubble := range bubbles {
+		if bubble.Kind == "expression" {
+			if in.CoreMode == "single" && expression == "" {
+				expression = bubble.Key
+			}
+			continue
+		}
 		if e.sendBubble(ctx, turn, bubble) {
 			replied = true
 		}
 	}
-	e.recordUsage(ctx, bot, convID, res, replied)
+	// 两种驱动模式的表情都放在文本之后；对方有新输入时放弃表情。
+	if expression != "" && !e.hasPendingInput(convID) {
+		if e.sendBubble(ctx, turn, Bubble{Kind: "expression", Key: expression}) {
+			replied = true
+		}
+	}
+	e.recordCalls(ctx, bot, convID, calls, replied)
+	if replied {
+		e.touchAfterReply(ctx, bot, turn.peerID, reason)
+	}
 }
 
 // checkLimits 判断限额；返回 true 表示本轮不再回复。
@@ -743,6 +797,7 @@ type turnContext struct {
 	ident  store.Identity
 	conv   store.Conversation
 	member store.ConversationMember
+	peerID pgtype.UUID
 }
 
 // card 读取 bot 绑定的角色卡（未绑定返回 nil）。
@@ -763,6 +818,7 @@ func (e *Engine) card(ctx context.Context, bot store.Bot) (*store.CharacterCard,
 // buildPromptInput 组装提示词输入（bot 级内容 + 对话级内容 + 历史）。
 func (e *Engine) buildPromptInput(ctx context.Context, turn *turnContext, card *store.CharacterCard, opening bool) (PromptInput, error) {
 	in := PromptInput{
+		CoreMode:  turn.bot.CoreMode,
 		MediaTags: e.mediaTags(ctx, turn.bot),
 		Kind:      turn.conv.Kind,
 		Now:       e.now(),
@@ -770,8 +826,18 @@ func (e *Engine) buildPromptInput(ctx context.Context, turn *turnContext, card *
 		// 人设注入方式来自全局设置（部分网关会丢弃 system 消息）。
 		PersonaMode: e.Settings().PersonaMode,
 	}
+	if in.CoreMode == "" {
+		in.CoreMode = "single"
+	}
 	if card != nil {
 		in.Card = CardFromStore(*card)
+		expressions, err := e.q.ListCardExpressions(ctx, card.ID)
+		if err != nil {
+			return PromptInput{}, err
+		}
+		for _, expression := range expressions {
+			in.Expressions = append(in.Expressions, PromptExpression{Key: expression.Key, Description: expression.Description, Sort: expression.Sort})
+		}
 	}
 	if opening {
 		in.Instruction = InstructionOpening
@@ -784,7 +850,15 @@ func (e *Engine) buildPromptInput(ctx context.Context, turn *turnContext, card *
 		ConversationID: turn.conv.ID,
 		IdentityID:     turn.bot.IdentityID,
 	})
-	if err == nil && len(others) > 0 {
+	if err != nil {
+		return PromptInput{}, err
+	}
+	if len(others) > 0 {
+		turn.peerID = others[0]
+		in.Memory, in.Relation, err = e.loadPeerMemory(ctx, turn.bot.ID, turn.peerID)
+		if err != nil {
+			return PromptInput{}, err
+		}
 		if peer, perr := e.q.GetIdentityByID(ctx, others[0]); perr == nil {
 			in.Peer = PromptPeer{Gender: peer.Gender, Age: peer.Age, Tags: peer.Tags}
 			if peer.ProvincePublic && peer.Province != nil {
@@ -857,22 +931,43 @@ func (e *Engine) history(ctx context.Context, turn *turnContext) ([]PromptHistor
 	return out, nil
 }
 
-// chat 调用模型；模型为空时用默认模型。
-func (e *Engine) chat(ctx context.Context, bot store.Bot, in PromptInput) (ChatResult, error) {
+// modelRequest 选择调用所需的模型与生成参数，消息由调用方提供。
+func (e *Engine) modelRequest(bot store.Bot, kind string) ChatRequest {
+	settings := e.Settings()
 	model := strings.TrimSpace(bot.Model)
 	if model == "" {
-		model = e.Settings().Model
+		model = strings.TrimSpace(settings.Model)
 	}
+	req := ChatRequest{Model: model, MaxTokens: int(bot.MaxOutputTokens), Temperature: float64(bot.Temperature), CacheKey: CacheKey(bot.ID)}
+	switch kind {
+	case "reason":
+		if v := strings.TrimSpace(settings.ReasonModel); v != "" {
+			req.Model = v
+		}
+		if v := strings.TrimSpace(bot.ReasonModel); v != "" {
+			req.Model = v
+		}
+		req.MaxTokens = max(req.MaxTokens, 800)
+		req.Temperature = 0.5
+		req.CacheKey += "-reason"
+	case "memory":
+		req.Model = strings.TrimSpace(settings.MemoryModel)
+		if req.Model == "" {
+			req.Model = strings.TrimSpace(settings.Model)
+		}
+		req.MaxTokens, req.Temperature, req.CacheKey = 1200, 0.2, "anonchat-memory"
+	}
+	return req
+}
+
+// chat 调用心核模型；模型为空时用默认模型。
+func (e *Engine) chat(ctx context.Context, bot store.Bot, in PromptInput) (ChatResult, error) {
 	client, timeout := e.llm()
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	return client.Chat(cctx, ChatRequest{
-		Model:       model,
-		Messages:    BuildMessages(in),
-		MaxTokens:   int(bot.MaxOutputTokens),
-		Temperature: float64(bot.Temperature),
-		CacheKey:    CacheKey(bot.ID),
-	})
+	req := e.modelRequest(bot, "reply")
+	req.Messages = BuildMessages(in)
+	return client.Chat(cctx, req)
 }
 
 // sendBubble 发送一条气泡：广播 typing → 等待打字时长 → 再次确认会话未结束 → 发送。
@@ -880,8 +975,35 @@ func (e *Engine) sendBubble(ctx context.Context, turn *turnContext, bubble Bubbl
 	kind := bubble.Kind
 	text := strings.TrimSpace(bubble.Text)
 	var mediaID pgtype.UUID
+	expression := kind == "expression"
 
 	switch kind {
+	case "expression":
+		if e.hasPendingInput(turn.conv.ID) || !turn.bot.CardID.Valid {
+			return false
+		}
+		count, err := e.q.CountConversationMediaMessages(ctx, turn.conv.ID)
+		if err != nil || (turn.bot.ConvMediaLimit >= 0 && count >= int64(turn.bot.ConvMediaLimit)) {
+			return false
+		}
+		expressions, err := e.q.ListCardExpressions(ctx, turn.bot.CardID)
+		if err != nil {
+			return false
+		}
+		for _, item := range expressions {
+			if item.Key == bubble.Key {
+				mediaID = item.MediaItemID
+				break
+			}
+		}
+		if !mediaID.Valid {
+			return false
+		}
+		item, err := e.q.GetMediaItem(ctx, mediaID)
+		if err != nil || item.Kind != "image" {
+			return false
+		}
+		kind = "image"
 	case "image", "video":
 		item, ok := e.pickMedia(ctx, turn, bubble.Tags)
 		if !ok {
@@ -896,13 +1018,20 @@ func (e *Engine) sendBubble(ctx context.Context, turn *turnContext, bubble Bubbl
 	}
 
 	e.conv.BroadcastTyping(ctx, turn.conv.ID, turn.bot.IdentityID, turn.member.MemberID)
-	if delay := typingDelay(utf8.RuneCountInString(text), int(turn.bot.TypingMsPerChar)); delay > 0 {
+	chars := utf8.RuneCountInString(text)
+	if expression {
+		chars = 2
+	}
+	if delay := typingDelay(chars, int(turn.bot.TypingMsPerChar)); delay > 0 {
 		if err := e.sleep(ctx, delay); err != nil {
 			return false
 		}
 	}
 	// 发送前再确认一次：全局配置仍可用、会话没有结束（关闭后不再发送）。
 	if !e.ready() {
+		return false
+	}
+	if expression && e.hasPendingInput(turn.conv.ID) {
 		return false
 	}
 	conv, err := e.q.GetConversation(ctx, turn.conv.ID)
@@ -939,11 +1068,11 @@ func (e *Engine) pickMedia(ctx context.Context, turn *turnContext, tags []string
 	if !turn.bot.MediaFolderID.Valid || len(tags) == 0 {
 		return store.MediaItem{}, false
 	}
-	sent, err := e.q.ListConversationSentMediaIDs(ctx, turn.conv.ID)
+	count, err := e.q.CountConversationMediaMessages(ctx, turn.conv.ID)
 	if err != nil {
 		return store.MediaItem{}, false
 	}
-	if turn.bot.ConvMediaLimit >= 0 && len(sent) >= int(turn.bot.ConvMediaLimit) {
+	if turn.bot.ConvMediaLimit >= 0 && count >= int64(turn.bot.ConvMediaLimit) {
 		return store.MediaItem{}, false
 	}
 	item, err := e.q.PickMediaForBot(ctx, store.PickMediaForBotParams{
@@ -958,9 +1087,12 @@ func (e *Engine) pickMedia(ctx context.Context, turn *turnContext, tags []string
 }
 
 // recordUsage 记录一次调用的用量，并在同一事务里累加累计用量。
-func (e *Engine) recordUsage(ctx context.Context, bot store.Bot, convID pgtype.UUID, res ChatResult, replied bool) {
+func (e *Engine) recordUsage(ctx context.Context, bot store.Bot, convID pgtype.UUID, res ChatResult, replied bool, kind string) {
+	// 调用结束时会话可能已经超时；已产生的消耗仍需用独立、有界的上下文落库。
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), queryTimeout)
+	defer cancel()
 	replies := int32(0)
-	if replied {
+	if replied && kind == "reply" {
 		replies = 1
 	}
 	tokens := int64(res.PromptTokens + res.CompletionTokens)
@@ -973,6 +1105,7 @@ func (e *Engine) recordUsage(ctx context.Context, bot store.Bot, convID pgtype.U
 	defer tx.Rollback(ctx)
 	q := e.q.WithTx(tx)
 	if _, err := q.InsertBotUsage(ctx, store.InsertBotUsageParams{
+		Kind:             kind,
 		BotID:            bot.ID,
 		ConversationID:   convID,
 		PromptTokens:     int32(res.PromptTokens),
@@ -1027,5 +1160,11 @@ func warnEmptyOutput(logger *slog.Logger, bot store.Bot, res ChatResult) {
 			"completion_tokens", res.CompletionTokens)
 		return
 	}
-	logger.Info("bot 模型输出为空", "bot_id", bot.ID.String(), "finish_reason", res.FinishReason)
+	// 结束原因也是不可信的上游文本，只记录协议内固定值。
+	finishReason := "unknown"
+	switch res.FinishReason {
+	case "stop", "content_filter", "tool_calls", "function_call":
+		finishReason = res.FinishReason
+	}
+	logger.Info("bot 模型输出为空", "bot_id", bot.ID.String(), "finish_reason", finishReason)
 }

@@ -19,10 +19,20 @@ vi.mock('./botApi', () => ({
   adminResetBotUsage: (id: string) => adminResetBotUsage(id),
 }))
 
+vi.mock('./BotMemoriesDialog', () => ({
+  BotMemoriesDialog: ({ bot, onClose }: { bot: AdminBot; onClose: () => void }) => (
+    <div role="dialog" aria-label={`${bot.label}的记忆`}><button onClick={onClose}>关闭记忆</button></div>
+  ),
+}))
+
 import { BotListPanel } from './BotListPanel'
 
 function sampleBot(over: Partial<AdminBot> = {}): AdminBot {
   return {
+    coreMode: 'single',
+    reasonModel: '',
+    memoryEnabled: true,
+    memoryCount: 3,
     id: 'bot-1',
     label: '夜猫',
     cardId: 'card-1',
@@ -60,6 +70,8 @@ function sampleBot(over: Partial<AdminBot> = {}): AdminBot {
       cleanMode: false,
     },
     usage: {
+      windowReasonTokens: 31,
+      windowMemoryTokens: 17,
       usedTokens: 120,
       usedReplies: 2,
       windowTokens: 120,
@@ -134,4 +146,48 @@ describe('BotListPanel', () => {
     await user.click(within(dialog).getByRole('button', { name: '删除' }))
     await vi.waitFor(() => expect(adminDeleteBot).toHaveBeenCalledWith('bot-1'))
   })
+
+  it('显示智核、记忆 token 与记忆数量，提供记忆入口', async () => {
+    render(<BotListPanel onError={vi.fn()} />)
+    const [first] = await screen.findAllByTestId('admin-bot')
+    expect(first).toHaveTextContent('智核 token31')
+    expect(first).toHaveTextContent('记忆 token17')
+    expect(first).toHaveTextContent('记忆条数3')
+    expect(within(first).getByRole('button', { name: '记忆' })).toBeInTheDocument()
+  })
+
+
+  it('记忆入口打开对应 bot 的弹窗', async () => {
+    const user = userEvent.setup()
+    render(<BotListPanel onError={vi.fn()} />)
+    const [first] = await screen.findAllByTestId('admin-bot')
+    await user.click(within(first).getByRole('button', { name: '记忆' }))
+    expect(screen.getByRole('dialog', { name: '夜猫的记忆' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '关闭记忆' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('创建与编辑都提交驱动模式、智核模型和记忆开关', async () => {
+    const user = userEvent.setup()
+    render(<BotListPanel onError={vi.fn()} />)
+    const [first] = await screen.findAllByTestId('admin-bot')
+    await user.click(within(first).getByRole('button', { name: '编辑' }))
+    let dialog = screen.getByRole('dialog', { name: '编辑 bot「夜猫」' })
+    expect(within(dialog).getByText('双核每轮至少多一次模型调用')).toBeInTheDocument()
+    await user.selectOptions(within(dialog).getByLabelText('驱动模式'), 'dual')
+    await user.type(within(dialog).getByLabelText('智核模型'), 'reason-v2')
+    await user.click(within(dialog).getByRole('switch', { name: '长期记忆' }))
+    await user.click(within(dialog).getByRole('button', { name: '保存' }))
+    await vi.waitFor(() => expect(adminUpdateBot).toHaveBeenCalledWith('bot-1', expect.objectContaining({ coreMode: 'dual', reasonModel: 'reason-v2', memoryEnabled: false })))
+    await vi.waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: '新建 Bot' }))
+    dialog = screen.getByRole('dialog', { name: '新建 Bot' })
+    await user.type(within(dialog).getByLabelText('备注名'), '新双核')
+    await user.selectOptions(within(dialog).getByLabelText('驱动模式'), 'dual')
+    await user.type(within(dialog).getByLabelText('智核模型'), 'reason-new')
+    await user.click(within(dialog).getByRole('switch', { name: '长期记忆' }))
+    await user.click(within(dialog).getByRole('button', { name: '创建' }))
+    await vi.waitFor(() => expect(adminCreateBot).toHaveBeenCalledWith(expect.objectContaining({ coreMode: 'dual', reasonModel: 'reason-new', memoryEnabled: false })))
+  })
+
 })

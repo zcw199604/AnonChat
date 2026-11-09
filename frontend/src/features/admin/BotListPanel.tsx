@@ -24,6 +24,7 @@ import {
 import type { BotFormState } from './botForm'
 import { useUiStore } from '../../stores/ui'
 import { Toggle } from '../../components/Toggle'
+import { BotMemoriesDialog } from './BotMemoriesDialog'
 import { Button, ConfirmDialog, EmptyState, LoadingRows, Modal, StatusBadge, inputClass } from './ui'
 
 type Confirm = { kind: 'reset' | 'delete'; bot: AdminBot }
@@ -37,6 +38,7 @@ export function BotListPanel({ onError }: { onError: (e: unknown) => void }) {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<AdminBot | null>(null)
+  const [memoryBot, setMemoryBot] = useState<AdminBot | null>(null)
   const [confirm, setConfirm] = useState<Confirm | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
 
@@ -112,6 +114,7 @@ export function BotListPanel({ onError }: { onError: (e: unknown) => void }) {
               toggling={togglingId === bot.id}
               onToggle={() => void toggleEnabled(bot)}
               onEdit={() => setEditing(bot)}
+              onMemories={() => setMemoryBot(bot)}
               onReset={() => setConfirm({ kind: 'reset', bot })}
               onDelete={() => setConfirm({ kind: 'delete', bot })}
             />
@@ -143,6 +146,16 @@ export function BotListPanel({ onError }: { onError: (e: unknown) => void }) {
             setEditing(null)
             void load()
           }}
+          onError={onError}
+        />
+      )}
+
+      {memoryBot && (
+        <BotMemoriesDialog
+          key={memoryBot.id}
+          bot={memoryBot}
+          onClose={() => setMemoryBot(null)}
+          onChanged={() => void load()}
           onError={onError}
         />
       )}
@@ -192,6 +205,7 @@ function BotTile({
   onEdit,
   onReset,
   onDelete,
+  onMemories,
 }: {
   bot: AdminBot
   toggling: boolean
@@ -199,6 +213,7 @@ function BotTile({
   onEdit: () => void
   onReset: () => void
   onDelete: () => void
+  onMemories: () => void
 }) {
   const p = bot.profile
   const profileBits = [
@@ -241,6 +256,8 @@ function BotTile({
         <dd className="truncate text-lobby-ink">{bot.cardName || '—'}</dd>
         <dt className="text-lobby-sub">媒体文件夹</dt>
         <dd className="truncate text-lobby-ink">{bot.folderName || '—'}</dd>
+        <dt className="text-lobby-sub">驱动模式</dt>
+        <dd className="text-lobby-ink">{bot.coreMode === 'dual' ? '双核' : '单核'}</dd>
         <dt className="text-lobby-sub">模型</dt>
         <dd className="truncate font-mono text-lobby-ink">{bot.model || '默认'}</dd>
         {profileBits.length > 0 && (
@@ -261,6 +278,18 @@ function BotTile({
         <UsageMeter label="总回复条数" used={bot.usage.usedReplies} limit={bot.totalReplyLimit} />
         <UsageMeter label="窗口 token" used={bot.usage.windowTokens} limit={bot.windowTokenLimit} />
         <UsageMeter label="窗口条数" used={bot.usage.windowReplies} limit={bot.windowReplyLimit} />
+        <div className="flex justify-between text-[11px]">
+          <span className="text-lobby-sub">窗口智核 token</span>
+          <span className="font-mono text-lobby-ink">{bot.usage.windowReasonTokens}</span>
+        </div>
+        <div className="flex justify-between text-[11px]">
+          <span className="text-lobby-sub">窗口记忆 token</span>
+          <span className="font-mono text-lobby-ink">{bot.usage.windowMemoryTokens}</span>
+        </div>
+        <div className="flex justify-between text-[11px] sm:col-span-2">
+          <span className="text-lobby-sub">记忆条数</span>
+          <span className="font-mono text-lobby-ink">{bot.memoryCount}</span>
+        </div>
         <div className="flex justify-between text-[11px] sm:col-span-2">
           <span className="text-lobby-sub">
             缓存命中率 <span className="font-mono text-lobby-ink">{cacheHitRate(bot.usage.windowCachedTokens, bot.usage.windowPromptTokens)}</span>
@@ -274,7 +303,10 @@ function BotTile({
         </div>
       </div>
 
-      <footer className="mt-4 flex justify-end gap-1.5 border-t border-lobby-line pt-3">
+      <footer className="mt-4 flex flex-wrap justify-end gap-1.5 border-t border-lobby-line pt-3">
+        <Button variant="ghost" size="sm" onClick={onMemories}>
+          记忆
+        </Button>
         <Button variant="ghost" size="sm" onClick={onEdit}>
           编辑
         </Button>
@@ -308,6 +340,33 @@ function FieldLabel({ label, children }: { label: string; children: ReactNode })
       <span className="block text-xs font-medium text-lobby-sub">{label}</span>
       {children}
     </label>
+  )
+}
+
+/** 单核/双核与记忆配置由新建、编辑表单共用。 */
+function CoreFields({ value, onChange }: {
+  value: Pick<BotFormState, 'coreMode' | 'reasonModel' | 'memoryEnabled'>
+  onChange: (next: Pick<BotFormState, 'coreMode' | 'reasonModel' | 'memoryEnabled'>) => void
+}) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <FieldLabel label="驱动模式">
+        <select aria-label="驱动模式" className={inputClass} value={value.coreMode}
+          onChange={(e) => onChange({ ...value, coreMode: e.target.value as BotFormState['coreMode'] })}>
+          <option value="single">单核</option>
+          <option value="dual">双核</option>
+        </select>
+        <span className="block text-[11px] text-lobby-sub">双核每轮至少多一次模型调用</span>
+      </FieldLabel>
+      <FieldLabel label="智核模型（留空用默认）">
+        <input aria-label="智核模型" className={inputClass} value={value.reasonModel}
+          onChange={(e) => onChange({ ...value, reasonModel: e.target.value })} />
+      </FieldLabel>
+      <label className="flex items-center gap-2 text-xs sm:col-span-2">
+        <Toggle checked={value.memoryEnabled} onChange={(memoryEnabled) => onChange({ ...value, memoryEnabled })} label="长期记忆" />
+        长期记忆
+      </label>
+    </div>
   )
 }
 
@@ -399,6 +458,9 @@ function CreateBotDialog({
             <SelectOptions items={folders} emptyLabel="不绑定文件夹" />
           </select>
         </FieldLabel>
+        <div className="sm:col-span-2">
+          <CoreFields value={form} onChange={(next) => setForm({ ...form, ...next })} />
+        </div>
         <div className="flex items-center gap-2 sm:col-span-2">
           <Toggle checked={form.enabled} onChange={(v) => setForm({ ...form, enabled: v })} label="创建后启用" />
           <span className="text-xs text-lobby-sub">创建后启用</span>
@@ -515,6 +577,7 @@ function EditBotDialog({
               </select>
             </FieldLabel>
           </div>
+          <CoreFields value={form} onChange={(next) => setForm({ ...form, ...next })} />
           <div className="flex flex-wrap items-center gap-4 text-xs">
             <label className="flex items-center gap-2">
               <Toggle checked={form.enabled} onChange={(v) => setForm({ ...form, enabled: v })} label="启用" /> 启用

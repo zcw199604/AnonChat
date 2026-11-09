@@ -13,7 +13,35 @@ import type { Gender } from '../../lib/api/client'
 
 // ---- 角色卡 ----
 
+export interface LoreEntry {
+  keys: string[]
+  content: string
+  enabled: boolean
+  constant: boolean
+  case_sensitive: boolean
+  order: number
+  comment: string
+}
+
+export interface CardExpression {
+  id: string
+  key: string
+  description: string
+  mediaItemId: string
+  sort: number
+}
+
+
 export interface CharacterCard {
+  heartPrompt: string
+  reasonPrompt: string
+  alternateGreetings: string[]
+  postHistoryInstructions: string
+  lorebook: LoreEntry[]
+  tools: string[]
+  creatorNotes: string
+  sourceFormat: 'manual' | 'st' | 'krp'
+  expressionCount: number
   id: string
   name: string
   description: string
@@ -27,6 +55,14 @@ export interface CharacterCard {
 }
 
 export interface CharacterCardInput {
+  heartPrompt: string
+  reasonPrompt: string
+  alternateGreetings: string[]
+  postHistoryInstructions: string
+  lorebook: LoreEntry[]
+  tools: string[]
+  creatorNotes: string
+
   name: string
   description: string
   personality: string
@@ -52,7 +88,39 @@ export function adminDeleteCharacterCard(id: string): Promise<void> {
   return apiRequest<void>('DELETE', `/api/admin/character-cards/${id}`)
 }
 
+/** 单文件上传不设置 Content-Type，由浏览器生成 multipart boundary。 */
+async function uploadCardFile<T>(path: string, file: File, fields: Record<string, string> = {}): Promise<T> {
+  const body = new FormData()
+  body.append('file', file)
+  for (const [key, value] of Object.entries(fields)) body.append(key, value)
+  const response = await fetch(path, { method: 'POST', credentials: 'same-origin', body })
+  return readResponse<T>(response)
+}
+
+export function adminImportCharacterCard(file: File): Promise<{ card: CharacterCard; warnings: string[] }> {
+  return uploadCardFile('/api/admin/character-cards/import', file)
+}
+
+export function adminCardExpressions(cardId: string): Promise<CardExpression[]> {
+  return apiRequest('GET', `/api/admin/character-cards/${cardId}/expressions`)
+}
+
+export function adminCreateCardExpression(cardId: string, file: File, key: string, description: string): Promise<CardExpression> {
+  return uploadCardFile(`/api/admin/character-cards/${cardId}/expressions`, file, { key, description })
+}
+
+export function adminUpdateCardExpression(id: string, body: Pick<CardExpression, 'key' | 'description' | 'sort'>): Promise<CardExpression> {
+  return apiRequest('PATCH', `/api/admin/card-expressions/${id}`, body)
+}
+
+export function adminDeleteCardExpression(id: string): Promise<void> {
+  return apiRequest('DELETE', `/api/admin/card-expressions/${id}`)
+}
+
 // ---- Bot 设置 ----
+
+export type CoreMode = 'single' | 'dual'
+
 
 /** Bot 对外的身份资料（与真人共用同一套字段）。 */
 export interface AdminBotProfile {
@@ -69,6 +137,8 @@ export interface AdminBotProfile {
 
 /** Bot 用量统计。 */
 export interface AdminBotUsage {
+  windowReasonTokens: number
+  windowMemoryTokens: number
   usedTokens: number
   usedReplies: number
   windowTokens: number
@@ -79,6 +149,11 @@ export interface AdminBotUsage {
 }
 
 export interface AdminBot {
+  memoryCount: number
+  coreMode: CoreMode
+  reasonModel: string
+  memoryEnabled: boolean
+
   id: string
   label: string
   cardId: string | null
@@ -111,6 +186,10 @@ export interface AdminBot {
 }
 
 export interface AdminBotCreate {
+  coreMode: CoreMode
+  reasonModel: string
+  memoryEnabled: boolean
+
   label: string
   nickname: string
   cardId: string | null
@@ -119,6 +198,10 @@ export interface AdminBotCreate {
 }
 
 export interface AdminBotUpdate {
+  coreMode: CoreMode
+  reasonModel: string
+  memoryEnabled: boolean
+
   label: string
   cardId: string | null
   mediaFolderId: string | null
@@ -253,6 +336,12 @@ export function adminDeleteMediaItem(id: string): Promise<void> {
 // ---- 全局设置（how.md §15.3）----
 
 export interface BotSettings {
+  reasonModel: string
+  memoryModel: string
+  memoryRetentionDays: number
+  memoryExtractEvery: number
+  oocGuard: boolean
+
   enabled: boolean
   baseUrl: string
   model: string
@@ -276,6 +365,12 @@ export interface BotSettings {
 }
 
 export interface BotSettingsInput {
+  reasonModel: string
+  memoryModel: string
+  memoryRetentionDays: number
+  memoryExtractEvery: number
+  oocGuard: boolean
+
   enabled: boolean
   baseUrl: string
   model: string
@@ -312,4 +407,46 @@ export function adminTestBotConnection(
   body: { baseUrl?: string; model?: string; apiKey?: string } = {},
 ): Promise<BotConnectionTest> {
   return apiRequest<BotConnectionTest>('POST', '/api/admin/bot-settings/test', body)
+}
+
+// ---- 长期记忆（仅后台可用） ----
+
+export interface AdminBotMemory {
+  identityId: string
+  publicCode: string
+  nickname: string
+  affinity: number
+  moodLabel: string
+  moodValue: number
+  eventCount: number
+  lastInteractionAt: string
+}
+
+export interface AdminBotMemoryEvent {
+  id: string
+  conversationId: string | null
+  gist: string
+  tags: string[]
+  createdAt: string
+}
+
+export interface AdminBotMemoryDetail {
+  profile: Record<string, Record<string, { v: string; t: string }>>
+  events: AdminBotMemoryEvent[]
+}
+
+export function adminBotMemories(id: string, limit = 20, offset = 0): Promise<AdminBotMemory[]> {
+  return apiRequest('GET', `/api/admin/bots/${id}/memories?limit=${limit}&offset=${offset}`)
+}
+
+export function adminBotMemory(id: string, identityId: string): Promise<AdminBotMemoryDetail> {
+  return apiRequest('GET', `/api/admin/bots/${id}/memories/${identityId}`)
+}
+
+export function adminDeleteBotMemory(id: string, identityId: string): Promise<void> {
+  return apiRequest('DELETE', `/api/admin/bots/${id}/memories/${identityId}`)
+}
+
+export function adminClearBotMemories(id: string): Promise<void> {
+  return apiRequest('DELETE', `/api/admin/bots/${id}/memories`)
 }

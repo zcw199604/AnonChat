@@ -157,7 +157,7 @@ func runMigrations(t *testing.T, url string) {
 // Truncate 清空身份/验证相关表，确保测试之间互不影响。
 func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	const q = `TRUNCATE identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes, character_cards, media_folders, media_items, bots, bot_usage, bot_settings RESTART IDENTITY CASCADE`
+	const q = `TRUNCATE bot_memory_cursors, bot_peer_events, bot_peer_memories, card_expressions, identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes, character_cards, media_folders, media_items, bots, bot_usage, bot_settings RESTART IDENTITY CASCADE`
 	if _, err := pool.Exec(context.Background(), q); err != nil {
 		t.Fatalf("清空表失败: %v", err)
 	}
@@ -346,10 +346,22 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 	)
 	storyHandler := story.NewHandler(storySvc, adminSvc)
 
+	mediaRoot := c.MediaRoot
+	if mediaRoot == "" {
+		mediaRoot = t.TempDir()
+	}
+	cfg.MediaRoot = mediaRoot
+	mediaStorage, err := media.NewStorage(mediaRoot)
+	if err != nil {
+		t.Fatalf("构造媒体存储失败: %v", err)
+	}
+	mediaSvc := media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB)
+	mediaHandler := media.NewHandler(mediaSvc, adminSvc)
+
 	// AI 机器人：引擎始终创建并运行（how.md §15.2）；BotLLM 非 nil 时注入假模型并默认启用设置。
 	// 生效配置写在 bot_settings 里：开关/模型/兜底时间/瓶龄/时区都从数据库读，
 	// 因此测试可以在运行时用 PUT /api/admin/bot-settings 热切换。
-	botSvc := bot.New(pool, logger, bot.WithConversation(convSvc))
+	botSvc := bot.New(pool, logger, bot.WithConversation(convSvc), bot.WithMedia(mediaSvc))
 	bottleLoop := c.BotBottleLoop
 	if bottleLoop <= 0 {
 		bottleLoop = 20 * time.Millisecond
@@ -386,17 +398,6 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 	botHandler := bot.NewHandler(botSvc, adminSvc, botEngine, botSettings,
 		limiterOr(c.BotSettingsTestLimiter), logger)
 	go botEngine.Run(mctx)
-
-	mediaRoot := c.MediaRoot
-	if mediaRoot == "" {
-		mediaRoot = t.TempDir()
-	}
-	cfg.MediaRoot = mediaRoot
-	mediaStorage, err := media.NewStorage(mediaRoot)
-	if err != nil {
-		t.Fatalf("构造媒体存储失败: %v", err)
-	}
-	mediaHandler := media.NewHandler(media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB), adminSvc)
 
 	deps := api.Deps{Cfg: cfg, Pool: pool, Logger: logger, Identity: idHandler, Verify: verHandler,
 		Realtime: gateway, Conversation: convSvc, Report: reportSvc, Ban: banSvc, Resolver: resolver,

@@ -60,6 +60,11 @@ type EnvSettings struct {
 
 // Settings 是一份"生效配置"快照。明文 API Key 只存在于内存，绝不写日志、不进接口响应。
 type Settings struct {
+	ReasonModel        string
+	MemoryModel        string
+	MemoryRetention    time.Duration
+	MemoryExtractEvery int
+	OOCGuard           bool
 	Enabled            bool
 	BaseURL            string
 	Model              string
@@ -212,6 +217,9 @@ func (c *SettingsCache) fromEnv() Settings {
 		BottleMinAge:       clampDuration(c.env.BottleMinAge, 0, maxBottleAgeSecs),
 		Timezone:           tz,
 		PersonaMode:        PersonaModeUser,
+		MemoryRetention:    30 * 24 * time.Hour,
+		MemoryExtractEvery: 20,
+		OOCGuard:           true,
 		Location:           LoadLocation(tz),
 		APIKeySource:       APIKeySourceNone,
 	}
@@ -236,6 +244,11 @@ func (c *SettingsCache) fromRow(row store.BotSetting) Settings {
 		PersonaMode:        normalizePersonaMode(row.PersonaMode),
 		Location:           LoadLocation(row.Timezone),
 		UpdatedAt:          row.UpdatedAt.Time,
+		ReasonModel:        strings.TrimSpace(row.ReasonModel),
+		MemoryModel:        strings.TrimSpace(row.MemoryModel),
+		MemoryRetention:    time.Duration(row.MemoryRetentionDays) * 24 * time.Hour,
+		MemoryExtractEvery: int(row.MemoryExtractEvery),
+		OOCGuard:           row.OocGuard,
 	}
 	key, source, hint, stale := c.resolveAPIKey(row.LlmApiKeyEnc, row.LlmApiKeyHint, row.LlmApiKeyBaseUrl, s.BaseURL)
 	s.APIKey, s.APIKeySource, s.APIKeyHint, s.APIKeyStale = key, source, hint, stale
@@ -329,6 +342,11 @@ func evaluateReady(s Settings, injectedLLM bool) (bool, string) {
 
 // UpdateInput 是后台保存的全局设置（apiKey 为空表示保持不变）。
 type UpdateInput struct {
+	ReasonModel          string
+	MemoryModel          string
+	MemoryRetentionDays  int32
+	MemoryExtractEvery   int32
+	OOCGuard             bool
 	Enabled              bool
 	BaseURL              string
 	Model                string
@@ -346,6 +364,12 @@ type UpdateInput struct {
 
 // Validate 校验后台提交的设置（纯函数，便于单测）。
 func (in UpdateInput) Validate() error {
+	if in.MemoryRetentionDays < 1 || in.MemoryRetentionDays > 365 {
+		return httpx.NewError(httpx.CodeInvalidRequest, "记忆保留期需在 1–365 天之间")
+	}
+	if in.MemoryExtractEvery < 5 || in.MemoryExtractEvery > 200 {
+		return httpx.NewError(httpx.CodeInvalidRequest, "记忆抽取间隔需在 5–200 条之间")
+	}
 	base := strings.TrimSpace(in.BaseURL)
 	if base != "" {
 		u, err := url.Parse(base)
@@ -435,6 +459,11 @@ func (c *SettingsCache) Update(ctx context.Context, in UpdateInput, adminID pgty
 		Timezone:             strings.TrimSpace(in.Timezone),
 		UpdatedBy:            adminID,
 		PersonaMode:          personaMode,
+		ReasonModel:          strings.TrimSpace(in.ReasonModel),
+		MemoryModel:          strings.TrimSpace(in.MemoryModel),
+		MemoryRetentionDays:  in.MemoryRetentionDays,
+		MemoryExtractEvery:   in.MemoryExtractEvery,
+		OocGuard:             in.OOCGuard,
 	})
 	if err != nil {
 		return Settings{}, err

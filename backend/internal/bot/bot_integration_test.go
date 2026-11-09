@@ -165,6 +165,8 @@ func TestMatchFallbackEndToEnd(t *testing.T) {
 
 	// 默认是 user 注入方式（兼容会丢弃 system 的网关）：不发送任何 system 消息，
 	// 角色设定块（到"【设定结束】"为止）在所有调用（开场 + 回复）里逐字节相同，保证缓存前缀稳定。
+	// 开场轮可能已产生文本和图片，回复轮仍在进行；等待第二次调用后再检查前缀。
+	waitFor(t, "开场与回复两次模型调用", 5*time.Second, func() bool { return len(llm.snapshot()) >= 2 })
 	calls := llm.snapshot()
 	if len(calls) < 2 {
 		t.Fatalf("假 LLM 应至少被调用 2 次（开场 + 回复），实际 %d 次", len(calls))

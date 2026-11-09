@@ -141,10 +141,18 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 		admin.WithOnlineLister(hub), admin.WithLimitSettings(settings))
 	adminSvc.SetResolver(resolver)
 
+	// 媒体库：文件根目录在启动时自动创建；管理接口与用户侧文件访问始终注册。
+	mediaStorage, err := media.NewStorage(cfg.MediaRoot)
+	if err != nil {
+		return Deps{}, err
+	}
+	mediaSvc := media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB)
+	mediaHandler := media.NewHandler(mediaSvc, adminSvc)
+
 	// AI 机器人：管理接口始终可用；引擎也始终创建并运行（how.md §15.2）。
 	// 生效配置（开关、模型接入、兜底时间、瓶龄、时区）来自 bot_settings，后台可热切换；
 	// 环境变量只用于首次初始化与 API Key 回退。
-	botSvc := bot.New(pool, logger, bot.WithConversation(convSvc))
+	botSvc := bot.New(pool, logger, bot.WithConversation(convSvc), bot.WithMedia(mediaSvc))
 	initCtx, initCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	botSettings, err := bot.NewSettingsCache(initCtx, pool, logger, cfg.SettingsEncKey, bot.EnvSettings{
 		Enabled:            cfg.BotEnabled,
@@ -195,14 +203,6 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 		story.WithMinDuration(cfg.StoryMinDuration),
 	)
 	storyHandler := story.NewHandler(storySvc, adminSvc)
-
-	// 媒体库：文件根目录在启动时自动创建；管理接口与用户侧文件访问始终注册。
-	mediaStorage, err := media.NewStorage(cfg.MediaRoot)
-	if err != nil {
-		return Deps{}, err
-	}
-	mediaSvc := media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB)
-	mediaHandler := media.NewHandler(mediaSvc, adminSvc)
 
 	// VERIFICATION_MODE=off 时不构造实名验证服务，也不注册 /api/verify/* 路由。
 	var verifyHandler *verify.Handler
@@ -476,10 +476,21 @@ func (s *Server) adminHandler() http.Handler {
 		am.Handle("GET /api/admin/media-items/{id}/file", a.RequireAdmin(http.HandlerFunc(s.deps.Media.AdminFileHandler)))
 	}
 	if s.deps.BotAdmin != nil {
+		am.Handle("POST /api/admin/character-cards/import", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ImportCardHandler)))
+		am.Handle("GET /api/admin/character-cards/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.GetCardHandler)))
+		am.Handle("GET /api/admin/character-cards/{id}/expressions", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ListExpressionsHandler)))
+		am.Handle("POST /api/admin/character-cards/{id}/expressions", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.CreateExpressionHandler)))
+		am.Handle("PATCH /api/admin/card-expressions/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.UpdateExpressionHandler)))
+		am.Handle("DELETE /api/admin/card-expressions/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.DeleteExpressionHandler)))
 		am.Handle("GET /api/admin/character-cards", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ListCardsHandler)))
 		am.Handle("POST /api/admin/character-cards", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.CreateCardHandler)))
 		am.Handle("PUT /api/admin/character-cards/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.UpdateCardHandler)))
 		am.Handle("DELETE /api/admin/character-cards/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.DeleteCardHandler)))
+		am.Handle("GET /api/admin/bots/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.GetBotHandler)))
+		am.Handle("GET /api/admin/bots/{id}/memories", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ListMemoriesHandler)))
+		am.Handle("GET /api/admin/bots/{id}/memories/{identityId}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.GetMemoryHandler)))
+		am.Handle("DELETE /api/admin/bots/{id}/memories/{identityId}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.DeleteMemoryHandler)))
+		am.Handle("DELETE /api/admin/bots/{id}/memories", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ClearMemoriesHandler)))
 		am.Handle("GET /api/admin/bots", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ListBotsHandler)))
 		am.Handle("POST /api/admin/bots", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.CreateBotHandler)))
 		am.Handle("PUT /api/admin/bots/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.UpdateBotHandler)))

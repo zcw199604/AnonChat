@@ -1,22 +1,19 @@
 -- ---- 角色卡（后台管理，how.md §10）----
 
 -- name: ListCharacterCards :many
-SELECT id, name, description, personality, scenario, first_message, example_dialogue, system_prompt,
-       created_at, updated_at
+SELECT *
 FROM character_cards
 ORDER BY created_at DESC;
 
 -- name: GetCharacterCard :one
-SELECT id, name, description, personality, scenario, first_message, example_dialogue, system_prompt,
-       created_at, updated_at
+SELECT *
 FROM character_cards
 WHERE id = $1;
 
 -- name: InsertCharacterCard :one
-INSERT INTO character_cards (name, description, personality, scenario, first_message, example_dialogue, system_prompt)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, name, description, personality, scenario, first_message, example_dialogue, system_prompt,
-          created_at, updated_at;
+INSERT INTO character_cards (name, description, personality, scenario, first_message, example_dialogue, system_prompt, heart_prompt, reason_prompt, alternate_greetings, post_history_instructions, lorebook, tools, expression_folder_id, creator_notes, source_format, extensions)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+RETURNING *;
 
 -- name: UpdateCharacterCard :one
 UPDATE character_cards
@@ -27,13 +24,54 @@ SET name = $2,
     first_message = $6,
     example_dialogue = $7,
     system_prompt = $8,
+    heart_prompt = $9,
+    reason_prompt = $10,
+    alternate_greetings = $11,
+    post_history_instructions = $12,
+    lorebook = $13,
+    tools = $14,
+    expression_folder_id = $15,
+    creator_notes = $16,
+    source_format = $17,
+    extensions = $18,
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, description, personality, scenario, first_message, example_dialogue, system_prompt,
-          created_at, updated_at;
+RETURNING *;
 
 -- name: DeleteCharacterCard :execrows
 DELETE FROM character_cards WHERE id = $1;
+
+-- name: GetCharacterCardForUpdate :one
+SELECT * FROM character_cards WHERE id = $1 FOR UPDATE;
+
+-- name: SetCardExpressionFolder :one
+UPDATE character_cards SET expression_folder_id = $2, updated_at = now()
+WHERE id = $1 RETURNING *;
+
+-- name: ListCardExpressions :many
+SELECT * FROM card_expressions WHERE card_id = $1 ORDER BY sort, key;
+
+-- name: CountConversationMediaMessages :one
+-- 表情允许重复发送，限额按实际媒体消息条数计算。
+SELECT count(*) FROM messages
+WHERE conversation_id = $1 AND kind IN ('image', 'video') AND media_id IS NOT NULL;
+
+-- name: GetCardExpression :one
+SELECT * FROM card_expressions WHERE id = $1;
+
+-- name: CountCardExpressions :one
+SELECT count(*) FROM card_expressions WHERE card_id = $1;
+
+-- name: InsertCardExpression :one
+INSERT INTO card_expressions (card_id, key, description, media_item_id, sort)
+VALUES ($1, $2, $3, $4, $5) RETURNING *;
+
+-- name: UpdateCardExpression :one
+UPDATE card_expressions SET key = $2, description = $3, sort = $4
+WHERE id = $1 RETURNING *;
+
+-- name: DeleteCardExpression :execrows
+DELETE FROM card_expressions WHERE id = $1;
 
 -- ---- Bot 设置（后台管理 + 引擎读取）----
 
@@ -44,35 +82,18 @@ SELECT b.id, b.identity_id, b.label, b.card_id, b.media_folder_id, b.enabled, b.
        b.total_token_limit, b.total_reply_limit, b.window_seconds, b.window_token_limit,
        b.window_reply_limit, b.conv_reply_limit, b.conv_min_interval_seconds, b.conv_media_limit,
        b.reply_delay_min_ms, b.reply_delay_max_ms, b.typing_ms_per_char, b.bottle_interval_seconds,
-       b.used_tokens, b.used_replies, b.created_at, b.updated_at,
+       b.used_tokens, b.used_replies, b.created_at, b.updated_at, b.core_mode, b.reason_model, b.memory_enabled,
        i.nickname, i.avatar_seed, i.public_code, i.gender, i.age, i.province, i.province_public,
        i.tags, i.clean_mode, i.match_gender, i.match_same_province, i.vip_until,
        COALESCE(cc.name, '')::text AS card_name,
        COALESCE(mf.name, '')::text AS folder_name,
-       COALESCE((
-           SELECT sum(bu.prompt_tokens + bu.completion_tokens)
-           FROM bot_usage bu
-           WHERE bu.bot_id = b.id
-             AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
-       ), 0)::bigint AS window_tokens,
-       COALESCE((
-           SELECT sum(bu.prompt_tokens)
-           FROM bot_usage bu
-           WHERE bu.bot_id = b.id
-             AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
-       ), 0)::bigint AS window_prompt_tokens,
-       COALESCE((
-           SELECT sum(bu.cached_tokens)
-           FROM bot_usage bu
-           WHERE bu.bot_id = b.id
-             AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
-       ), 0)::bigint AS window_cached_tokens,
-       COALESCE((
-           SELECT sum(bu.replies)
-           FROM bot_usage bu
-           WHERE bu.bot_id = b.id
-             AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
-       ), 0)::bigint AS window_replies,
+       COALESCE(u.window_tokens, 0)::bigint AS window_tokens,
+       COALESCE(u.window_prompt_tokens, 0)::bigint AS window_prompt_tokens,
+       COALESCE(u.window_cached_tokens, 0)::bigint AS window_cached_tokens,
+       COALESCE(u.window_replies, 0)::bigint AS window_replies,
+       COALESCE(u.window_reason_tokens, 0)::bigint AS window_reason_tokens,
+       COALESCE(u.window_memory_tokens, 0)::bigint AS window_memory_tokens,
+       (SELECT count(*) FROM bot_peer_memories m WHERE m.bot_id = b.id)::bigint AS memory_count,
        COALESCE((
            SELECT count(*)
            FROM conversations c
@@ -83,6 +104,17 @@ FROM bots b
 JOIN identities i ON i.id = b.identity_id
 LEFT JOIN character_cards cc ON cc.id = b.card_id
 LEFT JOIN media_folders mf ON mf.id = b.media_folder_id
+LEFT JOIN LATERAL (
+    SELECT sum(bu.prompt_tokens + bu.completion_tokens) AS window_tokens,
+           sum(bu.prompt_tokens) AS window_prompt_tokens,
+           sum(bu.cached_tokens) AS window_cached_tokens,
+           sum(bu.replies) AS window_replies,
+           sum(bu.prompt_tokens + bu.completion_tokens) FILTER (WHERE bu.kind = 'reason') AS window_reason_tokens,
+           sum(bu.prompt_tokens + bu.completion_tokens) FILTER (WHERE bu.kind = 'memory') AS window_memory_tokens
+    FROM bot_usage bu
+    WHERE bu.bot_id = b.id
+      AND bu.created_at >= now() - make_interval(secs => b.window_seconds)
+) u ON true
 ORDER BY b.created_at DESC;
 
 -- name: GetBot :one
@@ -91,7 +123,7 @@ SELECT id, identity_id, label, card_id, media_folder_id, enabled, model, tempera
        total_token_limit, total_reply_limit, window_seconds, window_token_limit,
        window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
        reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-       used_tokens, used_replies, created_at, updated_at
+       used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 FROM bots
 WHERE id = $1;
 
@@ -101,7 +133,7 @@ SELECT id, identity_id, label, card_id, media_folder_id, enabled, model, tempera
        total_token_limit, total_reply_limit, window_seconds, window_token_limit,
        window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
        reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-       used_tokens, used_replies, created_at, updated_at
+       used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 FROM bots
 WHERE identity_id = $1;
 
@@ -111,7 +143,7 @@ SELECT id, identity_id, label, card_id, media_folder_id, enabled, model, tempera
        total_token_limit, total_reply_limit, window_seconds, window_token_limit,
        window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
        reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-       used_tokens, used_replies, created_at, updated_at
+       used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled
 FROM bots
 WHERE enabled
 ORDER BY id;
@@ -125,14 +157,14 @@ FROM identities
 WHERE id IN (SELECT identity_id FROM bots WHERE enabled);
 
 -- name: InsertBot :one
-INSERT INTO bots (identity_id, label, card_id, media_folder_id, enabled)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO bots (identity_id, label, card_id, media_folder_id, enabled, core_mode, reason_model, memory_enabled)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING id, identity_id, label, card_id, media_folder_id, enabled, model, temperature,
           max_output_tokens, serve_match, serve_bottle, max_active_matches,
           total_token_limit, total_reply_limit, window_seconds, window_token_limit,
           window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
           reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-          used_tokens, used_replies, created_at, updated_at;
+          used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled;
 
 -- name: UpdateBot :one
 UPDATE bots
@@ -158,6 +190,9 @@ SET label = $2,
     reply_delay_max_ms = $21,
     typing_ms_per_char = $22,
     bottle_interval_seconds = $23,
+    core_mode = $24,
+    reason_model = $25,
+    memory_enabled = $26,
     updated_at = now()
 WHERE id = $1
 RETURNING id, identity_id, label, card_id, media_folder_id, enabled, model, temperature,
@@ -165,7 +200,7 @@ RETURNING id, identity_id, label, card_id, media_folder_id, enabled, model, temp
           total_token_limit, total_reply_limit, window_seconds, window_token_limit,
           window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
           reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-          used_tokens, used_replies, created_at, updated_at;
+          used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled;
 
 -- name: ResetBotUsage :one
 UPDATE bots
@@ -176,7 +211,7 @@ RETURNING id, identity_id, label, card_id, media_folder_id, enabled, model, temp
           total_token_limit, total_reply_limit, window_seconds, window_token_limit,
           window_reply_limit, conv_reply_limit, conv_min_interval_seconds, conv_media_limit,
           reply_delay_min_ms, reply_delay_max_ms, typing_ms_per_char, bottle_interval_seconds,
-          used_tokens, used_replies, created_at, updated_at;
+          used_tokens, used_replies, created_at, updated_at, core_mode, reason_model, memory_enabled;
 
 -- name: DeleteBot :execrows
 DELETE FROM bots WHERE id = $1;
@@ -190,7 +225,7 @@ SELECT b.id, b.identity_id, b.label, b.card_id, b.media_folder_id, b.enabled, b.
        b.total_token_limit, b.total_reply_limit, b.window_seconds, b.window_token_limit,
        b.window_reply_limit, b.conv_reply_limit, b.conv_min_interval_seconds, b.conv_media_limit,
        b.reply_delay_min_ms, b.reply_delay_max_ms, b.typing_ms_per_char, b.bottle_interval_seconds,
-       b.used_tokens, b.used_replies, b.created_at, b.updated_at
+       b.used_tokens, b.used_replies, b.created_at, b.updated_at, b.core_mode, b.reason_model, b.memory_enabled
 FROM conversation_members cm
 JOIN bots b ON b.identity_id = cm.identity_id
 WHERE cm.conversation_id = $1 AND cm.left_at IS NULL
@@ -221,9 +256,9 @@ WHERE conversation_id = $1;
 -- ---- 用量 ----
 
 -- name: InsertBotUsage :one
-INSERT INTO bot_usage (bot_id, conversation_id, prompt_tokens, completion_tokens, cached_tokens, replies)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, bot_id, conversation_id, prompt_tokens, completion_tokens, cached_tokens, replies, created_at;
+INSERT INTO bot_usage (bot_id, conversation_id, prompt_tokens, completion_tokens, cached_tokens, replies, kind)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING id, bot_id, conversation_id, prompt_tokens, completion_tokens, cached_tokens, replies, created_at, kind;
 
 -- name: AddBotUsed :exec
 -- 累加累计用量（与 InsertBotUsage 放在同一个事务里）。
@@ -250,9 +285,7 @@ WHERE conversation_id = $1;
 -- ---- 全局设置（单行表，how.md §15.1）----
 
 -- name: GetBotSettings :one
-SELECT id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model,
-       llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone,
-       updated_by, updated_at, persona_mode
+SELECT *
 FROM bot_settings
 WHERE id = 1;
 
@@ -278,8 +311,11 @@ SET enabled = $1,
     timezone = $11,
     updated_by = $12,
     persona_mode = $13,
+    reason_model = $14,
+    memory_model = $15,
+    memory_retention_days = $16,
+    memory_extract_every = $17,
+    ooc_guard = $18,
     updated_at = now()
 WHERE id = 1
-RETURNING id, enabled, llm_base_url, llm_api_key_enc, llm_api_key_hint, llm_api_key_base_url, llm_model,
-          llm_timeout_seconds, llm_send_cache_key, match_fallback_seconds, bottle_min_age_seconds, timezone,
-          updated_by, updated_at, persona_mode;
+RETURNING *;
