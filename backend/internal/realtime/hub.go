@@ -38,10 +38,30 @@ func NewHub() *Hub {
 	}
 }
 
-// addConn 注册一个连接。
-func (h *Hub) addConn(c *Conn) {
+// admit 在同一把锁内检查并登记连接；0 表示该维度不限。
+func (h *Hub) admit(c *Conn, perIP, perIPIdentity int) (bool, string, []*Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if c.ip != "" {
+		var conflicts []*Conn
+		for old := range h.byIP[c.ip] {
+			if old.identity.ID == c.identity.ID {
+				conflicts = append(conflicts, old)
+			}
+		}
+		if perIPIdentity > 0 && len(conflicts) >= perIPIdentity {
+			return false, "duplicate_session", conflicts
+		}
+		if perIP > 0 && len(h.byIP[c.ip]) >= perIP {
+			return false, "ip_conn_limit", nil
+		}
+	}
+	h.addConn(c)
+	return true, "", nil
+}
+
+// addConn 只能在 admit 持锁时调用。
+func (h *Hub) addConn(c *Conn) {
 	set := h.byIdentity[c.identity.ID]
 	if set == nil {
 		set = make(map[*Conn]struct{})

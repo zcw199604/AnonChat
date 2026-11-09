@@ -195,3 +195,11 @@ V2 预留：`muted`、`captcha_required`。
 已被真人配走或用户取消时放弃认领，没有可用 bot 时清除 pending 并等下一个间隔再试。
 兜底时间是动态的：`BotProvider.FallbackAfter()` 只读引擎内存里的生效配置，匹配 goroutine 内不访问数据库；
 后台改完设置后立即按新值判断到期（到期时间 = max(enqueuedAt + after, 上次失败后的重试时间)）。
+
+## 可配置限流规则
+
+- 管理员 `GET /api/admin/rate-limit-rules` 返回 `{version,multiplier,rules}`，规则按注册表排序，包含 `key/name/group/kind/algorithm/banSubject/limit/windowSeconds/banSeconds/enabled/minWindowSeconds/maxWindowSeconds/updatedAt`。
+- 管理员 `PUT /api/admin/rate-limit-rules` 全量提交 `{rules:[{key,limit,windowSeconds,banSeconds,enabled}]}`；校验失败 400，保存成功返回完整配置，审计动作 `update_rate_limit_rules` 仅记录变化规则的前后值。
+- WS 准入拒绝首帧为 `kicked`：`duplicate_session` 表示同网络同身份已有连接；`ip_conn_limit` 表示网络总连接数已满。拒绝连接不发送 hello、不登记在线、不写连接访问日志。
+- `match.start` 与 `match.next` 共享额度；超限返回带请求 ID 的 `rate_limited`，保留原会话。前端收到 `match.waiting` 后才切换等待状态。
+- 消息默认每身份 1 条/秒、10 条/分钟，房间另有 1 条/秒限制，组合检查拒绝不部分消耗额度；已落库的幂等重发不消耗额度、不重复广播。规则均可在后台修改或禁用，bot 发送仍豁免。

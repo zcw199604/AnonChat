@@ -17,6 +17,7 @@ export interface OutboxItem {
   body: string
   status: OutboxStatus
   messageId?: number
+  errorMessage?: string
 }
 
 /** 断线恢复所需的补拉接口。 */
@@ -227,6 +228,7 @@ export class WsClient {
     const item = this.outbox.get(clientMsgId)
     if (!item) return
     item.status = 'sending'
+    item.errorMessage = undefined
     this.emitOutbox(item)
     this.dispatchSend(item)
   }
@@ -250,9 +252,13 @@ export class WsClient {
         item.messageId = d?.messageId
         this.emitOutbox(item)
       })
-      .catch(() => {
+      .catch((e: unknown) => {
         item.status = 'failed'
+        item.errorMessage = e instanceof Error ? e.message : '发送失败'
         this.emitOutbox(item)
+        if (e instanceof ApiError && e.code === 'rate_limited') {
+          this.emit('error', { code: e.code, message: e.message })
+        }
       })
   }
 

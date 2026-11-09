@@ -70,8 +70,8 @@ func TestBroadcastNotBlockedBySlowClient(t *testing.T) {
 	h := NewHub()
 	fast := mkTestConn(uuidN(10), 16)
 	slow := mkTestConn(uuidN(11), 1)
-	h.addConn(fast)
-	h.addConn(slow)
+	h.admit(fast, 0, 0)
+	h.admit(slow, 0, 0)
 
 	// 模拟 coder/websocket.Close 的关闭握手耗时：closeConn 阻塞直到测试结束。
 	block := make(chan struct{})
@@ -123,9 +123,9 @@ func TestPresenceRefCounting(t *testing.T) {
 	a1 := mkTestConn(idA, 1)
 	a2 := mkTestConn(idA, 1)
 	b := mkTestConn(idB, 1)
-	h.addConn(a1)
-	h.addConn(a2)
-	h.addConn(b)
+	h.admit(a1, 0, 0)
+	h.admit(a2, 0, 0)
+	h.admit(b, 0, 0)
 
 	h.Add("room:1", a1)
 	if got := h.Count("room:1"); got != 1 {
@@ -154,7 +154,7 @@ func TestPresenceRefCounting(t *testing.T) {
 func TestPresenceDisconnectCleanup(t *testing.T) {
 	h := NewHub()
 	c := mkTestConn(uuidN(30), 1)
-	h.addConn(c)
+	h.admit(c, 0, 0)
 	h.Add("room:1", c)
 	h.Add("room:2", c)
 	if h.Count("room:1") != 1 || h.Count("room:2") != 1 {

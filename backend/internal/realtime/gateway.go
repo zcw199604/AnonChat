@@ -11,11 +11,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/anonchat/anonchat/backend/internal/identity"
+	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 )
 
 // Options 是网关可调参数，测试中注入较短值。
 type Options struct {
+	LimitSettings *moderation.LimitSettings
 	// AllowedOrigins 是握手允许的 Origin 白名单。
 	AllowedOrigins []string
 	// SendBuffer 是每连接发送缓冲容量，默认 64。
@@ -163,9 +165,14 @@ func (g *Gateway) ServeWS(w http.ResponseWriter, r *http.Request) {
 		send:        make(chan outMessage, g.opts.SendBuffer),
 		done:        make(chan struct{}),
 		closed:      make(chan struct{}),
+		removed:     make(chan struct{}),
 	}
 	c.closeConn = func(code websocket.StatusCode, reason string) {
 		_ = ws.Close(code, reason)
+	}
+	if ok, reason := g.admit(r.Context(), c); !ok {
+		rejectConnection(ws, reason)
+		return
 	}
 	c.serve(r.Context())
 }

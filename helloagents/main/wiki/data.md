@@ -113,3 +113,9 @@
 6. `00006_bot_settings.sql`：`bot_settings` 单行表（全局开关与模型接入配置，后台可热切换）。
 
 - `bot_settings.persona_mode`（迁移 00007）：数据库保留 `user` / `system` 以兼容旧数据，运行时和保存时统一使用 `user`，后台不再提供切换选项。角色设定及额外系统指令每轮放进第一条 user 消息；旧 `system` 值无需手动迁移。`BuildMessages` 仍支持显式 `system`，仅供独立诊断脚本对比。`bots.max_output_tokens` 默认值为 1024（思考型模型需要更大的输出额度）。
+
+### 限流规则（迁移 00008）
+
+- `rate_limit_rules`：`key text pk`、`limit_count int >=1`、`window_seconds int >=0`、`ban_seconds int >=-1`、`enabled boolean`、`updated_by → admin_users`（SET NULL）、`updated_at`。
+- 迁移插入全部默认规则；未知数据库 key 不参与运行，缺失 key 从代码默认值补齐。频率规则窗口至少 1 秒，并发规则窗口必须 0；不支持自动封禁的规则要求 `ban_seconds=0`。
+- `identities(created_ip, created_at)` 索引用于创建/换身份滚动计数；计数包含已撤销记录。清理保留期为 `AUDIT_RETENTION`，身份窗口不得超过该值。

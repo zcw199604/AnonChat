@@ -45,6 +45,13 @@ type Conn struct {
 	doCloseOnce sync.Once
 	// closeConn 关闭底层连接（可在测试中注入）。
 	closeConn func(code websocket.StatusCode, reason string)
+	// closeNow 强制关闭底层连接，不等待关闭握手（可在测试中注入）。
+	closeNow func()
+	// probe 用于同一旧连接的并发探活复用一次结果。
+	probeMu sync.Mutex
+	probe   *connProbe
+	ping    func(context.Context) error
+	removed chan struct{}
 }
 
 // Identity 返回该连接绑定的身份（供业务模块使用）。
@@ -202,9 +209,8 @@ func (c *Conn) handleFrame(ctx context.Context, data []byte) {
 	fn(ctx, c, env)
 }
 
-// serve 运行连接：注册到 Hub、发送 hello、启动写 goroutine、阻塞在读循环。
+// serve 运行已准入连接：发送 hello、启动写 goroutine、阻塞在读循环。
 func (c *Conn) serve(ctx context.Context) {
-	c.g.hub.addConn(c)
 	c.g.accessLog.LogAccess(ctx, c.identity.ID, eventWSConnect, c.ip, c.userAgent)
 	for _, o := range c.g.connObservers {
 		o.OnConnOpened(c)
@@ -231,6 +237,9 @@ func (c *Conn) serve(ctx context.Context) {
 	c.readLoop(ctx)
 
 	c.g.hub.removeConn(c)
+	if c.removed != nil {
+		close(c.removed)
+	}
 	for _, o := range c.g.connObservers {
 		o.OnConnClosed(c)
 	}

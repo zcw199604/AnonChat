@@ -155,7 +155,7 @@ func TestTokenBucket_CleanupIdleKeys(t *testing.T) {
 
 func TestDefaultLimits(t *testing.T) {
 	l := DefaultLimits()
-	if l.IdentityCreate.Limit != 10 || l.IdentityCreate.Window != time.Hour {
+	if l.IdentityCreate.Limit != 5 || l.IdentityCreate.Window != 24*time.Hour {
 		t.Errorf("IdentityCreate = %+v", l.IdentityCreate)
 	}
 	if l.Message.Rate != 5 || l.Message.Burst != 10 {

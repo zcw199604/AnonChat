@@ -30,9 +30,9 @@ func TestOnlineSnapshotAggregates(t *testing.T) {
 	c1 := mkOnlineTestConn(id, "甲", "ABC123", "9.9.9.9", "UA-early", early)
 	c2 := mkOnlineTestConn(id, "甲", "ABC123", "1.1.1.1", "UA-late", late)
 	c3 := mkOnlineTestConn(id, "甲", "ABC123", "9.9.9.9", "UA-late2", late)
-	h.addConn(c1)
-	h.addConn(c2)
-	h.addConn(c3)
+	h.admit(c1, 0, 0)
+	h.admit(c2, 0, 0)
+	h.admit(c3, 0, 0)
 
 	snap := h.OnlineSnapshot()
 	if len(snap) != 1 {
@@ -80,9 +80,9 @@ func TestOnlineSnapshotSortedByConnectedAtDesc(t *testing.T) {
 	old := mkOnlineTestConn(uuidN(50), "旧", "OLD", "1.0.0.1", "ua", base)
 	mid := mkOnlineTestConn(uuidN(51), "中", "MID", "1.0.0.2", "ua", base.Add(time.Minute))
 	recent := mkOnlineTestConn(uuidN(52), "新", "NEW", "1.0.0.3", "ua", base.Add(2*time.Minute))
-	h.addConn(old)
-	h.addConn(mid)
-	h.addConn(recent)
+	h.admit(old, 0, 0)
+	h.admit(mid, 0, 0)
+	h.admit(recent, 0, 0)
 
 	snap := h.OnlineSnapshot()
 	if len(snap) != 3 {
@@ -97,7 +97,7 @@ func TestOnlineSnapshotSortedByConnectedAtDesc(t *testing.T) {
 func TestOnlineSnapshotReturnsCopies(t *testing.T) {
 	h := NewHub()
 	c := mkOnlineTestConn(uuidN(60), "甲", "COPY", "2.2.2.2", "ua", time.Now())
-	h.addConn(c)
+	h.admit(c, 0, 0)
 
 	snap := h.OnlineSnapshot()
 	if len(snap) != 1 || len(snap[0].IPs) != 1 {

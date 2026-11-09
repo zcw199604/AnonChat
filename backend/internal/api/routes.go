@@ -75,7 +75,6 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 	if err != nil {
 		return Deps{}, err
 	}
-	limits := moderation.DefaultLimits().Scaled(cfg.RateLimitMultiplier)
 
 	// 敏感词过滤器。
 	filter, err := buildModerator(cfg, logger)
@@ -85,14 +84,22 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 
 	// 封禁服务（带 30 秒缓存 + 踢连接），后注入 WS 网关与身份处理器。
 	banSvc := moderation.NewBanService(pool, nil)
+	settings := moderation.NewLimitSettings(pool, cfg.RateLimitMultiplier, banSvc)
+	settings.SetIdentityWindowMax(int(cfg.AuditRetention.Seconds()))
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer loadCancel()
+	if err := settings.Load(loadCtx); err != nil {
+		return Deps{}, fmt.Errorf("加载限流规则: %w", err)
+	}
 
-	identitySvc := identity.NewService(pool, logger, limits.IdentityCreate.New())
+	identitySvc := identity.NewService(pool, logger, settings.Limiter(moderation.RuleIdentityCreate), identity.WithLimitSettings(settings))
 	identityHandler := identity.NewHandler(identitySvc, resolver, logger, cfg.VerificationMode)
 	identityHandler.SetIPBanChecker(banSvc)
 
 	// WebSocket 网关：真实身份解析、BanService 封禁检查、身份服务写访问日志。
 	gateway := realtime.NewGateway(realtime.Options{
 		AllowedOrigins: cfg.AllowedOrigins,
+		LimitSettings:  settings,
 	}, logger, identitySvc, banSvc, identitySvc, resolver)
 	hub := gateway.Hub()
 	// 让 BanService 能踢在线连接。
@@ -101,14 +108,13 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 	// 会话与消息管道：broker 用网关 Hub，屏蔽检查基于 blocks 表，限流与内容过滤接入。
 	convSvc := conversation.New(pool, logger, hub,
 		conversation.WithBlocker(conversation.NewSQLBlockChecker(pool)),
-		conversation.WithLimiter(limits.Message.New()),
-		conversation.WithRoomMessageLimiter(moderation.NewTokenBucket(1, 1)),
+		conversation.WithLimitSettings(settings),
 		conversation.WithFilter(filter),
 	)
 	convSvc.RegisterWS(gateway.Router(), cfg.VerificationMode)
 
 	// 随机匹配。
-	matchSvc := match.New(pool, logger, convSvc, hub, limits.MatchStart.New(), cfg.MatchRelaxAfter, cfg.MatchGrace)
+	matchSvc := match.New(pool, logger, convSvc, hub, settings.Limiter(moderation.RuleMatchStart), cfg.MatchRelaxAfter, cfg.MatchGrace)
 	matchSvc.RegisterWS(gateway.Router(), cfg.VerificationMode)
 	gateway.AddObserver(matchSvc)
 	gateway.SetResumableProvider(matchSvc.Resumable)
@@ -118,21 +124,21 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 	roomSvc.RegisterWS(gateway.Router(), cfg.VerificationMode)
 	gateway.AddConnObserver(roomSvc)
 
-	reportSvc := moderation.NewReportService(pool, logger, limits.ReportDaily.New(), identitySvc)
+	reportSvc := moderation.NewReportService(pool, logger, settings.Limiter(moderation.RuleReportDaily), identitySvc)
 
 	// 漂流瓶。
 	bottleSvc := bottle.New(pool, logger, convSvc, hub, filter,
-		limits.BottlePost.New(), limits.BottlePick.New(), reportSvc)
+		settings.Limiter(moderation.RuleBottlePost), settings.Limiter(moderation.RuleBottlePick), reportSvc)
 
 	// 私密链接。
 	privateSvc := privatechat.New(pool, logger, convSvc, hub,
-		limits.PrivateLinkCreate.New(), limits.PrivateLinkPassword.New())
+		settings.Limiter(moderation.RulePrivateLinkCreate), settings.Limiter(moderation.RulePrivateLinkPassword))
 	privateSvc.SetResolver(resolver)
 
 	// 管理后台。
 	adminSvc := admin.New(pool, logger, banSvc, hub,
-		admin.WithLoginLimiters(limits.AdminLogin.New(), limits.AdminLogin.New()),
-		admin.WithOnlineLister(hub))
+		admin.WithLoginLimiters(settings.Limiter(moderation.RuleAdminLogin), settings.Limiter(moderation.RuleAdminLogin)),
+		admin.WithOnlineLister(hub), admin.WithLimitSettings(settings))
 	adminSvc.SetResolver(resolver)
 
 	// AI 机器人：管理接口始终可用；引擎也始终创建并运行（how.md §15.2）。
@@ -158,18 +164,18 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 	botEngine := bot.NewEngine(pool, logger, convSvc, nil, botSettings, bot.WithBottles(bottleSvc))
 	convSvc.AddObserver(botEngine)
 	matchSvc.SetBotFallback(botEngine)
-	botHandler := bot.NewHandler(botSvc, adminSvc, botEngine, botSettings, limits.BotSettingsTest.New(), logger)
+	botHandler := bot.NewHandler(botSvc, adminSvc, botEngine, botSettings, settings.Limiter(moderation.RuleBotSettingsTest), logger)
 
 	// 资料与匹配偏好。
 	profileSvc := profile.New(pool, logger,
 		profile.WithFilter(filter),
-		profile.WithNicknameLimiters(limits.NicknameShuffle.New(), limits.NicknameSet.New()),
+		profile.WithNicknameLimiters(settings.Limiter(moderation.RuleNicknameShuffle), settings.Limiter(moderation.RuleNicknameSet)),
 	)
 	profileHandler := profile.NewHandler(profileSvc, logger, cfg.VerificationMode)
 
 	// VIP 与激活码。
 	vipSvc := vip.New(pool, logger,
-		vip.WithLimiters(limits.VIPRedeemPerID.New(), limits.VIPRedeemPerIP.New()),
+		vip.WithLimiters(settings.Limiter(moderation.RuleVIPRedeemPerID), settings.Limiter(moderation.RuleVIPRedeemPerIP)),
 		vip.WithAccessLogger(identitySvc),
 	)
 	vipHandler := vip.NewHandler(vipSvc, adminSvc, cfg.VerificationMode)
@@ -177,7 +183,7 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 	// 公告、广播、匿名动态与在线统计。
 	feedSvc := feed.New(pool, logger,
 		feed.WithFilter(filter),
-		feed.WithBroadcastLimiter(limits.BroadcastPost.New()),
+		feed.WithBroadcastLimiter(settings.Limiter(moderation.RuleBroadcastPost)),
 		feed.WithOnlineProvider(onlineProvider{hub: hub, match: matchSvc, room: roomSvc}),
 	)
 	feedHandler := feed.NewHandler(feedSvc, adminSvc)
@@ -185,7 +191,7 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 	// 故事书。
 	storySvc := story.New(pool, logger, convSvc, hub,
 		story.WithFilter(filter),
-		story.WithLimiter(limits.StoryCreate.New()),
+		story.WithLimiter(settings.Limiter(moderation.RuleStoryCreate)),
 		story.WithMinDuration(cfg.StoryMinDuration),
 	)
 	storyHandler := story.NewHandler(storySvc, adminSvc)
@@ -206,7 +212,7 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 			return Deps{}, err
 		}
 		verifySvc, err := verify.NewService(pool, logger, sms, cfg.PhoneEncKey, cfg.PhoneHmacKey,
-			verify.WithLimiters(limits.SMSPerPhone.New(), limits.SMSPerPhoneDaily.New(), limits.SMSPerIPDaily.New()),
+			verify.WithLimiters(settings.Limiter(moderation.RuleSMSPerPhone), settings.Limiter(moderation.RuleSMSPerPhoneDaily), settings.Limiter(moderation.RuleSMSPerIPDaily)),
 		)
 		if err != nil {
 			return Deps{}, err
@@ -433,6 +439,8 @@ func (s *Server) adminHandler() http.Handler {
 	am.Handle("GET /api/admin/reports", a.RequireAdmin(http.HandlerFunc(a.ListReportsHandler)))
 	am.Handle("GET /api/admin/reports/{id}", a.RequireAdmin(http.HandlerFunc(a.GetReportHandler)))
 	am.Handle("POST /api/admin/reports/{id}/resolve", a.RequireAdmin(http.HandlerFunc(a.ResolveReportHandler)))
+	am.Handle("GET /api/admin/rate-limit-rules", a.RequireAdmin(http.HandlerFunc(a.RateLimitRulesHandler)))
+	am.Handle("PUT /api/admin/rate-limit-rules", a.RequireAdmin(http.HandlerFunc(a.UpdateRateLimitRulesHandler)))
 	am.Handle("GET /api/admin/bans", a.RequireAdmin(http.HandlerFunc(a.ListBansHandler)))
 	am.Handle("POST /api/admin/bans", a.RequireAdmin(http.HandlerFunc(a.CreateBanHandler)))
 	am.Handle("DELETE /api/admin/bans/{id}", a.RequireAdmin(http.HandlerFunc(a.RevokeBanHandler)))

@@ -24,14 +24,15 @@ const (
 
 // Service 提供会话与消息的领域操作。
 type Service struct {
-	pool    *pgxpool.Pool
-	q       *store.Queries
-	logger  *slog.Logger
-	broker  realtime.Broker
-	limiter RateLimiter
-	filter  ContentFilter
-	blocker BlockChecker
-	now     func() time.Time
+	pool          *pgxpool.Pool
+	q             *store.Queries
+	logger        *slog.Logger
+	broker        realtime.Broker
+	limiter       RateLimiter
+	limitSettings *moderation.LimitSettings
+	filter        ContentFilter
+	blocker       BlockChecker
+	now           func() time.Time
 
 	burnDelay      time.Duration
 	burnTick       time.Duration
@@ -61,6 +62,11 @@ func WithLimiter(l RateLimiter) Option {
 			s.limiter = l
 		}
 	}
+}
+
+// WithLimitSettings 注入即时生效的组合限流配置。
+func WithLimitSettings(settings *moderation.LimitSettings) Option {
+	return func(s *Service) { s.limitSettings = settings }
 }
 
 // WithFilter 注入内容过滤器。

@@ -54,7 +54,8 @@ export function matchReducer(state: MatchState, action: MatchAction): MatchState
         filters: state.filters,
       }
     case 'next':
-      return { status: 'waiting', filters: state.filters }
+      // 收到 match.waiting 才切换；被限流时保留当前会话。
+      return state
     case 'leave':
       return { status: 'idle', filters: state.filters }
     case 'ended':

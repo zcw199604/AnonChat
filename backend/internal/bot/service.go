@@ -445,7 +445,7 @@ func (s *Service) DeleteBot(ctx context.Context, id pgtype.UUID) error {
 		return ErrBotNotFound
 	}
 	// bot 的 identity 不会被身份清理任务删除，删除 bot 时显式吊销。
-	if err := s.q.RevokeIdentity(ctx, bot.IdentityID); err != nil {
+	if _, err := s.q.RevokeIdentity(ctx, bot.IdentityID); err != nil {
 		return err
 	}
 	return nil

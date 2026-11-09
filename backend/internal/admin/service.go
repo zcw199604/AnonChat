@@ -67,16 +67,18 @@ func dummyPasswordHash() string {
 
 // Service 提供管理后台的领域操作。
 type Service struct {
-	q        *store.Queries
-	pool     *pgxpool.Pool
-	logger   *slog.Logger
-	banSvc   *moderation.BanService
-	stats    realtime.ConnStats
-	online   OnlineLister
-	resolver *httpx.ClientIPResolver
-	userLim  moderation.RateLimiter
-	ipLim    moderation.RateLimiter
-	now      func() time.Time
+	q             *store.Queries
+	pool          *pgxpool.Pool
+	logger        *slog.Logger
+	banSvc        *moderation.BanService
+	stats         realtime.ConnStats
+	online        OnlineLister
+	resolver      *httpx.ClientIPResolver
+	userLim       moderation.RateLimiter
+	ipLim         moderation.RateLimiter
+	now           func() time.Time
+	limitSettings *moderation.LimitSettings
+	rateUpdateMu  sync.Mutex
 }
 
 // Option 配置 Service。

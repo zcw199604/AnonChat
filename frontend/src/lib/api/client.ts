@@ -771,3 +771,36 @@ export function adminLookupIdentity(code: string): Promise<AdminIdentityLookup> 
 export function adminBroadcastReport(id: string, req: { reason: string; note?: string }): Promise<{ id: string }> {
   return apiRequest<{ id: string }>('POST', `/api/broadcasts/${id}/report`, req)
 }
+
+/** 管理后台可配置的限流规则。 */
+export interface AdminRateLimitRule {
+  key: string
+  name: string
+  group: 'identity' | 'message' | 'match' | 'ws' | 'other'
+  kind: 'frequency' | 'concurrent'
+  algorithm: 'fixed_window' | 'token_bucket'
+  banSubject: '' | 'identity' | 'ip'
+  limit: number
+  windowSeconds: number
+  banSeconds: number
+  enabled: boolean
+  minWindowSeconds: number
+  maxWindowSeconds: number
+  updatedAt: string | null
+}
+
+export interface AdminRateLimitSettings {
+  version: number
+  multiplier: number
+  rules: AdminRateLimitRule[]
+}
+
+export type AdminRateLimitUpdate = Pick<AdminRateLimitRule, 'key' | 'limit' | 'windowSeconds' | 'banSeconds' | 'enabled'>
+
+export function adminRateLimitRules(): Promise<AdminRateLimitSettings> {
+  return apiRequest('GET', '/api/admin/rate-limit-rules')
+}
+
+export function adminUpdateRateLimitRules(rules: AdminRateLimitUpdate[]): Promise<AdminRateLimitSettings> {
+  return apiRequest('PUT', '/api/admin/rate-limit-rules', { rules })
+}

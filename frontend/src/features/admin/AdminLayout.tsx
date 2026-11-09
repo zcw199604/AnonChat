@@ -33,6 +33,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '用户管理',
     items: [
       { to: '/admin/bans', label: '封禁管理' },
+      { to: '/admin/rate-limits', label: '限流规则' },
       { to: '/admin/lookup', label: '身份查询' },
     ],
   },

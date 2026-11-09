@@ -61,6 +61,39 @@ describe('WsClient', () => {
     await expect(p).rejects.toMatchObject({ code: 'rate_limited' })
   })
 
+  it('发消息被限流时保留并传递后端文案', async () => {
+    const { fake, client } = setup()
+    const errors = vi.fn()
+    client.on('error', errors)
+    client.connect()
+    fake.latest().open()
+    client.sendMessage('c1', 'hello')
+    const frame = fake.latest().sent[0]
+    fake.latest().message({ t: 'error', id: frame.id, d: { code: 'rate_limited', message: '发送过快，每秒最多 1 条' } })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(client.getOutbox()[0]).toMatchObject({ status: 'failed', errorMessage: '发送过快，每秒最多 1 条' })
+    expect(errors).toHaveBeenCalledWith({ code: 'rate_limited', message: '发送过快，每秒最多 1 条' }, expect.anything())
+  })
+
+  it('断线导致多条待发送消息失败时不广播错误提示', async () => {
+    const { fake, client } = setup()
+    const errors = vi.fn()
+    client.on('error', errors)
+    client.connect()
+    fake.latest().open()
+    client.sendMessage('c1', 'hello')
+    client.sendMessage('c1', 'world')
+    fake.latest().serverClose()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(client.getOutbox()).toHaveLength(2)
+    for (const item of client.getOutbox()) {
+      expect(item).toMatchObject({ status: 'failed', errorMessage: '连接已断开' })
+    }
+    expect(errors).not.toHaveBeenCalled()
+  })
+
   it('request 超时 10 秒后 reject', async () => {
     const { fake, client } = setup()
     client.connect()

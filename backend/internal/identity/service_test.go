@@ -1,6 +1,11 @@
 package identity
 
 import (
+	"context"
+	"errors"
+	"github.com/anonchat/anonchat/backend/internal/moderation"
+	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -68,5 +73,27 @@ func TestLastSeenNotCleanedBeforeThreshold(t *testing.T) {
 
 	if _, ok := s.lastSeen[id]; !ok {
 		t.Error("未达清理阈值时不应清理")
+	}
+}
+
+// TestInvalidIPFallsBackToMemory 在无法解析 IP 时先拒绝，不会接触数据库。
+func TestInvalidIPFallsBackToMemory(t *testing.T) {
+	settings := moderation.NewLimitSettings(nil, 1, nil)
+	s := NewService(nil, slog.Default(), moderation.AllowAll(), WithLimitSettings(settings))
+	for _, ip := range []string{"", "not-an-ip"} {
+		limiter := settings.Limiter(moderation.RuleIdentityCreate)
+		for i := 0; i < 5; i++ {
+			if !limiter.Allow(context.Background(), createLimitKey+ip) {
+				t.Fatal("初始额度不足")
+			}
+		}
+		_, err := s.Create(context.Background(), ip, "")
+		if err == nil {
+			t.Fatal("空或非法IP必须内存限流")
+		}
+		var appErr *httpx.APIError
+		if !errors.As(err, &appErr) || appErr.Code != httpx.CodeRateLimited {
+			t.Fatalf("期望限流错误，实际 %v", err)
+		}
 	}
 }

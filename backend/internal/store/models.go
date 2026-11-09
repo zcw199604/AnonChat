@@ -326,6 +326,16 @@ type PrivateLink struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
+type RateLimitRule struct {
+	Key           string             `json:"key"`
+	LimitCount    int32              `json:"limit_count"`
+	WindowSeconds int32              `json:"window_seconds"`
+	BanSeconds    int32              `json:"ban_seconds"`
+	Enabled       bool               `json:"enabled"`
+	UpdatedBy     pgtype.UUID        `json:"updated_by"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Report struct {
 	ID                 pgtype.UUID        `json:"id"`
 	ReporterIdentityID pgtype.UUID        `json:"reporter_identity_id"`

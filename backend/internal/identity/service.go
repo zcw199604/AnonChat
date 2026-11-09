@@ -38,11 +38,12 @@ const (
 
 // Service 提供身份相关的领域操作。
 type Service struct {
-	pool    *pgxpool.Pool
-	q       *store.Queries
-	logger  *slog.Logger
-	limiter moderation.RateLimiter // 每 IP 每小时创建身份次数
-	now     func() time.Time
+	pool     *pgxpool.Pool
+	q        *store.Queries
+	logger   *slog.Logger
+	limiter  moderation.RateLimiter // 缺失有效 IP 时的内存限流
+	settings *moderation.LimitSettings
+	now      func() time.Time
 
 	// lastSeen 节流：同一身份 touchInterval 内最多更新一次 last_seen_at。
 	// 定期清理过期条目，避免 map 随历史身份总数无限增长。
@@ -63,6 +64,11 @@ func WithClock(fn func() time.Time) Option {
 			s.now = fn
 		}
 	}
+}
+
+// WithLimitSettings 使用动态规则与数据库成功创建计数。
+func WithLimitSettings(settings *moderation.LimitSettings) Option {
+	return func(s *Service) { s.settings = settings }
 }
 
 // NewService 创建身份服务。limiter 用于限制每 IP 创建身份的频率。
@@ -94,25 +100,100 @@ type Session struct {
 
 // Create 新建一个匿名身份，写入 access_logs，并返回明文令牌。
 func (s *Service) Create(ctx context.Context, ip, userAgent string) (*Session, error) {
-	if !s.limiter.Allow(ctx, createLimitKey+ip) {
-		return nil, httpx.NewError(httpx.CodeRateLimited, "创建身份过于频繁，请稍后再试")
+	return s.issue(ctx, nil, ip, userAgent)
+}
+
+// issue 计数成功创建的身份数（包括已撤销身份），而非尝试次数。
+// IP 事务锁让 Create 与 Reset 在多个并发请求间共享滚动窗口。
+func (s *Service) issue(ctx context.Context, current *store.Identity, ip, userAgent string) (*Session, error) {
+	addr := parseIP(ip)
+	if addr != nil {
+		ip = addr.String()
+	}
+	if s.settings == nil || addr == nil {
+		limiter := s.limiter
+		if s.settings != nil {
+			limiter = s.settings.Limiter(moderation.RuleIdentityCreate)
+		}
+		if !limiter.Allow(ctx, createLimitKey+ip) {
+			return nil, httpx.NewError(httpx.CodeRateLimited, "创建身份过于频繁，请稍后再试")
+		}
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.q.WithTx(tx)
+	if s.settings != nil && addr != nil {
+		if err := q.LockIdentityCreateIP(ctx, ip); err != nil {
+			return nil, err
+		}
+		rule := s.settings.Current().Rules[moderation.RuleIdentityCreate]
+		if rule.Enabled {
+			count, err := q.CountCreatedIdentitiesByIP(ctx, store.CountCreatedIdentitiesByIPParams{Ip: *addr, WindowSeconds: int32(rule.WindowSeconds)})
+			if err != nil {
+				return nil, err
+			}
+			if count >= int64(rule.Limit)*int64(s.settings.Multiplier()) {
+				if err := tx.Rollback(ctx); err != nil {
+					return nil, err
+				}
+				s.settings.EnsureRuleBan(ctx, rule, createLimitKey+ip)
+				return nil, httpx.NewError(httpx.CodeRateLimited, "创建身份过于频繁，请稍后再试")
+			}
+		}
+	}
+	event := eventIdentityCreated
+	if current != nil {
+		locked, err := q.GetIdentityForUpdate(ctx, current.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUnauthorized
+		}
+		if err != nil {
+			return nil, err
+		}
+		if locked.RevokedAt.Valid {
+			return nil, ErrUnauthorized
+		}
+		current = &locked
+		n, err := q.RevokeIdentity(ctx, current.ID)
+		if err != nil {
+			return nil, err
+		}
+		if n != 1 {
+			return nil, ErrUnauthorized
+		}
+		event = eventIdentityReset
 	}
 	token, err := GenerateToken()
 	if err != nil {
 		return nil, err
 	}
-	ident, err := s.createIdentityWithRetry(ctx, s.q, token, ip)
+	ident, err := s.createIdentityWithRetry(ctx, q, token, ip)
 	if err != nil {
 		return nil, err
 	}
-	s.writeAccessLog(ctx, ident.ID, eventIdentityCreated, ip, userAgent)
+	if current != nil {
+		if err := q.SetIdentityBenefits(ctx, store.SetIdentityBenefitsParams{ID: ident.ID, VipUntil: current.VipUntil, Cards: current.BroadcastCards}); err != nil {
+			return nil, err
+		}
+		ident.VipUntil = current.VipUntil
+		ident.BroadcastCards = current.BroadcastCards
+	}
+	if err := q.InsertAccessLog(ctx, s.accessLogArg(ident.ID, event, ip, userAgent)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return &Session{Token: token, Identity: ident}, nil
 }
 
 // publicCodeRetries 是匿名编号唯一冲突时的最大重试次数（how.md 3.1）。
 const publicCodeRetries = 3
 
-// createIdentityWithRetry 生成匿名编号并插入身份，唯一冲突时重试。
+// createIdentityWithRetry 使用 ON CONFLICT DO NOTHING 重试唯一冲突，避免使事务中止。
 func (s *Service) createIdentityWithRetry(ctx context.Context, q *store.Queries, token, ip string) (store.Identity, error) {
 	var lastErr error
 	for attempt := 0; attempt < publicCodeRetries; attempt++ {
@@ -129,6 +210,9 @@ func (s *Service) createIdentityWithRetry(ctx context.Context, q *store.Queries,
 		})
 		if err == nil {
 			return ident, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return store.Identity{}, err
 		}
 		lastErr = err
 	}
@@ -156,46 +240,7 @@ func (s *Service) Resolve(ctx context.Context, token string) (*store.Identity, e
 // Reset 吊销当前身份并签发新身份。与 Create 共用同一创建限流 key；
 // 吊销、创建、写 access_log 在同一事务内，任一步失败整体回滚（旧身份保持有效）。
 func (s *Service) Reset(ctx context.Context, current *store.Identity, ip, userAgent string) (*Session, error) {
-	if !s.limiter.Allow(ctx, createLimitKey+ip) {
-		return nil, httpx.NewError(httpx.CodeRateLimited, "换身份过于频繁，请稍后再试")
-	}
-	token, err := GenerateToken()
-	if err != nil {
-		return nil, err
-	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := s.q.WithTx(tx)
-
-	if err := q.RevokeIdentity(ctx, current.ID); err != nil {
-		return nil, err
-	}
-	// 换身份：VIP 到期时间与剩余广播卡转移到新身份（how.md 2.7 场景 7），
-	// 资料与匿名编号重新生成。
-	ident, err := s.createIdentityWithRetry(ctx, q, token, ip)
-	if err != nil {
-		return nil, err
-	}
-	if err := q.SetIdentityBenefits(ctx, store.SetIdentityBenefitsParams{
-		ID:       ident.ID,
-		VipUntil: current.VipUntil,
-		Cards:    current.BroadcastCards,
-	}); err != nil {
-		return nil, err
-	}
-	ident.VipUntil = current.VipUntil
-	ident.BroadcastCards = current.BroadcastCards
-	if err := q.InsertAccessLog(ctx, s.accessLogArg(ident.ID, eventIdentityReset, ip, userAgent)); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return &Session{Token: token, Identity: ident}, nil
+	return s.issue(ctx, current, ip, userAgent)
 }
 
 // Touch 节流地更新 last_seen_at：同一身份 touchInterval 内最多写库一次，并顺带清理过期条目。

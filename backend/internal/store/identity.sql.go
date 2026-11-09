@@ -25,10 +25,29 @@ func (q *Queries) ConsumeBroadcastCard(ctx context.Context, id pgtype.UUID) (int
 	return result.RowsAffected(), nil
 }
 
+const countCreatedIdentitiesByIP = `-- name: CountCreatedIdentitiesByIP :one
+SELECT count(*) FROM identities
+WHERE created_ip = $1::inet
+  AND created_at > now() - make_interval(secs => $2::int)
+`
+
+type CountCreatedIdentitiesByIPParams struct {
+	Ip            netip.Addr `json:"ip"`
+	WindowSeconds int32      `json:"window_seconds"`
+}
+
+func (q *Queries) CountCreatedIdentitiesByIP(ctx context.Context, arg CountCreatedIdentitiesByIPParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countCreatedIdentitiesByIP, arg.Ip, arg.WindowSeconds)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createIdentity = `-- name: CreateIdentity :one
 INSERT INTO identities (token_hash, nickname, avatar_seed, created_ip, public_code)
 VALUES ($1, $2, $3, $4,
         COALESCE(NULLIF($5::text, ''), upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 10))))
+ON CONFLICT DO NOTHING
 RETURNING id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
           public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
           match_same_province, vip_until, broadcast_cards
@@ -233,6 +252,38 @@ func (q *Queries) GetIdentityByTokenHash(ctx context.Context, tokenHash []byte) 
 	return i, err
 }
 
+const getIdentityForUpdate = `-- name: GetIdentityForUpdate :one
+SELECT id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at, public_code, gender, age, province, province_public, tags, clean_mode, match_gender, match_same_province, vip_until, broadcast_cards FROM identities WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) GetIdentityForUpdate(ctx context.Context, id pgtype.UUID) (Identity, error) {
+	row := q.db.QueryRow(ctx, getIdentityForUpdate, id)
+	var i Identity
+	err := row.Scan(
+		&i.ID,
+		&i.TokenHash,
+		&i.Nickname,
+		&i.AvatarSeed,
+		&i.AccountID,
+		&i.CreatedIp,
+		&i.RevokedAt,
+		&i.CreatedAt,
+		&i.LastSeenAt,
+		&i.PublicCode,
+		&i.Gender,
+		&i.Age,
+		&i.Province,
+		&i.ProvincePublic,
+		&i.Tags,
+		&i.CleanMode,
+		&i.MatchGender,
+		&i.MatchSameProvince,
+		&i.VipUntil,
+		&i.BroadcastCards,
+	)
+	return i, err
+}
+
 const getMatchProfile = `-- name: GetMatchProfile :one
 
 SELECT id, gender, age, province, province_public, tags, clean_mode, match_gender, match_same_province, vip_until
@@ -294,6 +345,15 @@ func (q *Queries) InsertAccessLog(ctx context.Context, arg InsertAccessLogParams
 	return err
 }
 
+const lockIdentityCreateIP = `-- name: LockIdentityCreateIP :exec
+SELECT pg_advisory_xact_lock(hashtextextended('identity_create:' || $1::text, 0))
+`
+
+func (q *Queries) LockIdentityCreateIP(ctx context.Context, ip string) error {
+	_, err := q.db.Exec(ctx, lockIdentityCreateIP, ip)
+	return err
+}
+
 const refundBroadcastCard = `-- name: RefundBroadcastCard :exec
 UPDATE identities SET broadcast_cards = broadcast_cards + 1 WHERE id = $1
 `
@@ -303,13 +363,16 @@ func (q *Queries) RefundBroadcastCard(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
-const revokeIdentity = `-- name: RevokeIdentity :exec
+const revokeIdentity = `-- name: RevokeIdentity :execrows
 UPDATE identities SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
 
-func (q *Queries) RevokeIdentity(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, revokeIdentity, id)
-	return err
+func (q *Queries) RevokeIdentity(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeIdentity, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setIdentityBenefits = `-- name: SetIdentityBenefits :exec

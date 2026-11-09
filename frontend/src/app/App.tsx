@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useIdentityStore, onIdentityReset } from '../stores/identity'
 import { useConversationsStore } from '../stores/conversations'
@@ -92,8 +92,27 @@ function Shell() {
   )
 }
 
+function IdentityInitError({ message }: { message: string }) {
+  return (
+    <main
+      role="alert"
+      className="flex min-h-screen flex-col items-center justify-center gap-4 px-6 text-center"
+    >
+      <p className="text-lobby-sub">{message}</p>
+      <button
+        type="button"
+        className="rounded-full bg-brand px-5 py-2 font-medium text-white transition duration-150 ease-out"
+        onClick={() => location.reload()}
+      >
+        刷新页面
+      </button>
+    </main>
+  )
+}
+
 /** 应用壳：启动时完成身份初始化，再建立 WS 连接；管理后台懒加载。 */
 export default function App() {
+  const [initError, setInitError] = useState<string | null>(null)
   useEffect(() => {
     // 管理后台不触发匿名身份初始化，也不建立用户 WS 连接。
     if (typeof window !== 'undefined' && window.location.pathname.startsWith('/admin')) {
@@ -104,8 +123,12 @@ export default function App() {
     void (async () => {
       try {
         await useIdentityStore.getState().init()
-      } catch {
-        return // 初始化失败（如未登录环境）时不连接 WS
+      } catch (e) {
+        if (!cancelled) {
+          const code = (e as { code?: string }).code
+          setInitError(code === 'rate_limited' ? '身份创建过于频繁，请稍后再试' : code === 'banned' ? '当前网络已被封禁，请等待封禁解除后重试' : '身份初始化失败，请刷新页面重试')
+        }
+        return
       }
       if (cancelled) return
       // 刷新后若已被封禁，直接展示被踢出提示。
@@ -127,7 +150,7 @@ export default function App() {
       ws.on('error', (d) => {
         const code = (d as { code?: string })?.code
         if (!code) return
-        useUiStore.getState().setToast(errorMessage(code))
+        useUiStore.getState().setToast(code === 'rate_limited' ? (d as { message?: string }).message || errorMessage(code) : errorMessage(code))
         if (code === 'verification_required') useUiStore.getState().openVerification()
       })
       ws.connect()
@@ -162,7 +185,10 @@ export default function App() {
             </Suspense>
           }
         />
-        <Route path="/*" element={<Shell />} />
+        <Route
+          path="/*"
+          element={initError ? <IdentityInitError message={initError} /> : <Shell />}
+        />
       </Routes>
     </div>
   )

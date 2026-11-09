@@ -85,7 +85,6 @@ export default function MatchPage() {
   const auto = params.get('auto') === '1'
   useEffect(() => {
     if (!auto) return
-    dispatch({ type: 'start' })
     ws.send('match.start', {})
   }, [auto, ws])
 
@@ -102,7 +101,6 @@ export default function MatchPage() {
   }, [state.status])
 
   function startMatch() {
-    dispatch({ type: 'start' })
     ws.send('match.start', {})
   }
   function cancel() {

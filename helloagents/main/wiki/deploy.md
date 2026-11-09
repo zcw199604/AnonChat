@@ -77,3 +77,12 @@ docker compose exec -it backend /server admin create --username admin
 - `openssl rand -base64 32` 生成并离线备份 `PHONE_ENC_KEY`/`PHONE_HMAC_KEY`。
 - 创建首个管理员；配置异地备份。
 - 本包新增 HITL：用户协议中的 VIP 与 UGC 条款、激活码分发渠道与经营合规、广播与作品的审核人员安排。
+
+## 可配置限流升级（迁移 00008）
+
+- 新增 `rate_limit_rules` 默认规则和 `identities(created_ip, created_at)` 索引。启动加载规则失败会终止启动；后台「限流规则」保存后在当前服务实例即时生效。
+- 创建与换身份共享每 IP 5 次/24 小时滚动窗口，按成功创建数计数（含已撤销身份）；升级前过去 24 小时的记录立即纳入。超限默认封 IP 24 小时。
+- 身份窗口最大值为 `AUDIT_RETENTION`；调小保留期前应先调小身份窗口，否则启动校验会拒绝已有的超长窗口。默认身份窗口为 24 小时，保留期不应短于它。
+- `RATE_LIMIT_MULTIPLIER` 仅在运行时缩放频率规则与每 IP WS 总连接上限，不写库，也不缩放同 IP 同身份连接上限。WS 默认每 IP 3 条、同 IP 同身份 1 条，下调只限制后续连接。
+- 自动封禁沿用持久化 bans；已有有效封禁不延期。`banSeconds=0` 不封、`-1` 永久。不支持封禁的规则只能配置 0。
+- 频率计数与 WS 准入在进程内维护，自动封禁主体锁也为单实例范围；身份创建计数使用数据库事务锁。

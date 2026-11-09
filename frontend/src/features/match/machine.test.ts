@@ -20,8 +20,10 @@ describe('matchReducer', () => {
     expect(s.peer?.province).toBe('浙江')
     expect(s.peer && 'nickname' in s.peer).toBe(false)
   })
-  it('下一个回到等待中', () => {
-    expect(matchReducer({ status: 'chatting' }, { type: 'next' }).status).toBe('waiting')
+  it('请求下一个时保留会话，等待服务端确认；限流拒绝不会丢失聊天', () => {
+    const chatting = { status: 'chatting' as const, conversationId: 'c1', peer: { memberId: 2 } }
+    expect(matchReducer(chatting, { type: 'next' })).toEqual(chatting)
+    expect(matchReducer(chatting, { type: 'start' }).status).toBe('waiting')
   })
   it('离开回到空闲', () => {
     expect(matchReducer({ status: 'chatting' }, { type: 'leave' }).status).toBe('idle')

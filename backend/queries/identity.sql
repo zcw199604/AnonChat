@@ -26,11 +26,12 @@ WHERE public_code = $1;
 INSERT INTO identities (token_hash, nickname, avatar_seed, created_ip, public_code)
 VALUES ($1, $2, $3, $4,
         COALESCE(NULLIF(sqlc.arg(public_code)::text, ''), upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 10))))
+ON CONFLICT DO NOTHING
 RETURNING id, token_hash, nickname, avatar_seed, account_id, created_ip, revoked_at, created_at, last_seen_at,
           public_code, gender, age, province, province_public, tags, clean_mode, match_gender,
           match_same_province, vip_until, broadcast_cards;
 
--- name: RevokeIdentity :exec
+-- name: RevokeIdentity :execrows
 UPDATE identities SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL;
 
 -- name: TouchIdentityLastSeen :exec
@@ -92,3 +93,14 @@ WHERE id = sqlc.arg(id);
 SELECT id, gender, age, province, province_public, tags, clean_mode, match_gender, match_same_province, vip_until
 FROM identities
 WHERE id = $1;
+
+-- name: GetIdentityForUpdate :one
+SELECT * FROM identities WHERE id = $1 FOR UPDATE;
+
+-- name: LockIdentityCreateIP :exec
+SELECT pg_advisory_xact_lock(hashtextextended('identity_create:' || sqlc.arg(ip)::text, 0));
+
+-- name: CountCreatedIdentitiesByIP :one
+SELECT count(*) FROM identities
+WHERE created_ip = sqlc.arg(ip)::inet
+  AND created_at > now() - make_interval(secs => sqlc.arg(window_seconds)::int);

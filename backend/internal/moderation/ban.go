@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -50,9 +52,10 @@ type banCacheEntry struct {
 
 // BanService 负责封禁的创建、撤销与检查，带 30 秒缓存。
 type BanService struct {
-	q      *store.Queries
-	kicker Kicker
-	now    func() time.Time
+	autoLocks [64]sync.Mutex
+	q         *store.Queries
+	kicker    Kicker
+	now       func() time.Time
 
 	mu        sync.Mutex
 	cache     map[string]banCacheEntry
@@ -253,3 +256,38 @@ func parseUUID(s string) (pgtype.UUID, error) {
 
 // SetKicker 注入踢连接器（在网关装配完成后调用）。
 func (b *BanService) SetKicker(k Kicker) { b.kicker = k }
+
+// EnsureAutoBan 串行检查有效封禁，已有封禁不会被延长。分片锁避免主体锁表无界增长。
+func (b *BanService) EnsureAutoBan(ctx context.Context, subject BanSubject, banSeconds int, reason string) error {
+	if banSeconds == 0 {
+		return nil
+	}
+	if banSeconds < -1 {
+		return fmt.Errorf("非法封禁时长")
+	}
+	if err := validateSubject(subject); err != nil {
+		return err
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(subject.Type + "|" + subject.Value))
+	mu := &b.autoLocks[h.Sum32()%uint32(len(b.autoLocks))]
+	mu.Lock()
+	defer mu.Unlock()
+	_, err := b.q.GetActiveBan(ctx, store.GetActiveBanParams{SubjectType: subject.Type, SubjectValue: subject.Value, ExpiresAt: pgtype.Timestamptz{Time: b.now(), Valid: true}})
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		slog.Error("查询自动封禁失败", "error", err)
+		return err
+	}
+	var duration time.Duration
+	if banSeconds > 0 {
+		duration = time.Duration(banSeconds) * time.Second
+	}
+	_, err = b.Create(ctx, []BanSubject{subject}, duration, reason, pgtype.UUID{})
+	if err != nil {
+		slog.Error("写入自动封禁失败", "error", err)
+	}
+	return err
+}

@@ -166,6 +166,11 @@ func (s *Service) handleCancel(ctx context.Context, c *realtime.Conn, env realti
 
 func (s *Service) handleNext(ctx context.Context, c *realtime.Conn, env realtime.Envelope) {
 	ident := c.Identity()
+	if !s.limiter.Allow(ctx, "match_start:"+ident.ID.String()) {
+		c.SendError(env.ID, realtime.CodeRateLimited, "匹配请求过于频繁")
+		return
+	}
+
 	if conv, ok := s.activeMatchConv(ctx, ident.ID); ok {
 		_ = s.convSvc.End(ctx, conv, "peer_skipped")
 	}

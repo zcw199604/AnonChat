@@ -9,6 +9,7 @@ import { LoginPage } from './LoginPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { ReportDetailPage } from './pages/ReportDetailPage'
+import { RateLimitsPage } from './pages/RateLimitsPage'
 import { BansPage } from './pages/BansPage'
 import { LookupPage } from './pages/LookupPage'
 import { AnnouncementsPage } from './pages/AnnouncementsPage'
@@ -75,6 +76,7 @@ export default function AdminPage() {
           <Route path="reports" element={<ReportsPage />} />
           <Route path="reports/:id" element={<ReportDetailPage />} />
           <Route path="bans" element={<BansPage />} />
+          <Route path="rate-limits" element={<RateLimitsPage />} />
           <Route path="lookup" element={<LookupPage />} />
           <Route path="announcements" element={<AnnouncementsPage />} />
           <Route path="codes" element={<CodesPage />} />

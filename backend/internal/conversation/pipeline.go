@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/realtime"
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
@@ -191,8 +192,36 @@ func (s *Service) SendAs(ctx context.Context, in SendInput) (store.Message, bool
 		return store.Message{}, false, sendErr("conversation_ended", "会话已结束")
 	}
 
+	// 幂等重发先返回原 ack，不消耗额度，也不再次广播。
+	existing, err := s.q.GetMessageByIdentityClientID(ctx, store.GetMessageByIdentityClientIDParams{SenderIdentityID: ident.ID, ClientMsgID: in.ClientMsgID})
+	if err == nil {
+		if in.Ack != nil {
+			in.Ack(existing)
+		}
+		return existing, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return store.Message{}, false, err
+	}
+
 	// 限流钩子（bot 发送时跳过）。
-	if !in.SkipRateLimit {
+	if !in.SkipRateLimit && s.limitSettings != nil {
+		checks := []moderation.RuleCheck{{Rule: moderation.RuleMsgPerSecond, Key: "msg:" + ident.ID.String()}, {Rule: moderation.RuleMsgPerMinute, Key: "msg:" + ident.ID.String()}}
+		if conv.Kind == store.ConversationKindRoom {
+			checks = append(checks, moderation.RuleCheck{Rule: moderation.RuleRoomMsgInterval, Key: "room_msg:" + convID.String() + "|" + ident.ID.String()})
+		}
+		if ok, hit := s.limitSettings.AllowAll(ctx, checks...); !ok {
+			rule := s.limitSettings.Current().Rules[hit]
+			message := "房间内发言过快"
+			if hit == moderation.RuleMsgPerSecond {
+				message = fmt.Sprintf("发送过快，每秒最多 %d 条", s.limitSettings.EffectiveLimit(rule))
+			}
+			if hit == moderation.RuleMsgPerMinute {
+				message = fmt.Sprintf("发送过于频繁，每分钟最多 %d 条", s.limitSettings.EffectiveLimit(rule))
+			}
+			return store.Message{}, false, sendErr("rate_limited", message)
+		}
+	} else if !in.SkipRateLimit {
 		if !s.limiter.Allow(ctx, "msg:"+ident.ID.String()) {
 			return store.Message{}, false, sendErr("rate_limited", "发送过于频繁")
 		}

@@ -16,9 +16,11 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/anonchat/anonchat/backend/internal/identity"
+	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/realtime"
 	"github.com/anonchat/anonchat/backend/internal/store"
+	"sync/atomic"
 )
 
 const testOrigin = "http://test.local"
@@ -97,6 +99,8 @@ func mkIdentity(n byte, nickname string) *store.Identity {
 // ---- 环境搭建 ----
 
 type envOpts struct {
+	settings   *moderation.LimitSettings
+	observer   realtime.ConnObserver
 	bans       realtime.BanChecker
 	maxFrame   int64
 	idle       time.Duration
@@ -119,11 +123,15 @@ func newTestEnv(t *testing.T, resolver realtime.IdentityResolver, o envOpts) *te
 	acc := &fakeAccess{}
 	gw := realtime.NewGateway(realtime.Options{
 		AllowedOrigins: []string{testOrigin},
+		LimitSettings:  o.settings,
 		MaxFrameBytes:  o.maxFrame,
 		IdleTimeout:    o.idle,
 		SendBuffer:     o.sendBuffer,
 	}, logger, resolver, o.bans, acc, ipResolver)
 
+	if o.observer != nil {
+		gw.AddConnObserver(o.observer)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ws", gw.ServeWS)
 	srv := httptest.NewServer(mux)
@@ -441,4 +449,47 @@ func TestAccessLogOnConnectAndDisconnect(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Errorf("访问日志不足: connect=%d disconnect=%d", e.acc.count("ws_connect"), e.acc.count("ws_disconnect"))
+}
+
+type admissionObserver struct {
+	opened atomic.Int32
+	closed atomic.Int32
+}
+
+func (o *admissionObserver) OnConnOpened(*realtime.Conn) { o.opened.Add(1) }
+func (o *admissionObserver) OnConnClosed(*realtime.Conn) { o.closed.Add(1) }
+
+// TestRejectedAdmissionSkipsServe 验证拒绝分支不发送hello、不记录访问、不通知观察者。
+func TestRejectedAdmissionSkipsServe(t *testing.T) {
+	resolver := newFakeResolver()
+	for n := byte(1); n <= 4; n++ {
+		resolver.add(string(rune('a'+n)), mkIdentity(n, "用户"))
+	}
+	observer := &admissionObserver{}
+	env := newTestEnv(t, resolver, envOpts{settings: moderation.NewLimitSettings(nil, 1, nil), observer: observer})
+	for n := byte(1); n <= 3; n++ {
+		env.connect(t, string(rune('a'+n)))
+	}
+	c, _, err := env.dial(t, "e", testOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	rejected := readEnvelope(t, c, time.Second)
+	if rejected.Type != realtime.TypeKicked {
+		t.Fatalf("首帧=%s，期望kicked", rejected.Type)
+	}
+	var payload realtime.KickedPayload
+	if err := json.Unmarshal(rejected.Data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Reason != "ip_conn_limit" {
+		t.Fatalf("拒绝原因=%s", payload.Reason)
+	}
+	if observer.opened.Load() != 3 || env.acc.count("ws_connect") != 3 {
+		t.Fatal("拒绝连接触发了serve副作用")
+	}
+	if env.gw.Hub().ConnCount(mkUUID(4)) != 0 {
+		t.Fatal("拒绝连接已登记Hub")
+	}
 }

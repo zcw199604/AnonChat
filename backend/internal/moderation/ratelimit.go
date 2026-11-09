@@ -240,10 +240,10 @@ type Limits struct {
 // DefaultLimits 返回 how.md 表中的默认限流值。
 func DefaultLimits() Limits {
 	return Limits{
-		IdentityCreate:      WindowLimit{Limit: 10, Window: time.Hour},
+		IdentityCreate:      WindowLimit{Limit: 5, Window: 24 * time.Hour},
 		Message:             BucketLimit{Rate: 5, Burst: 10},
 		RoomMessageInterval: time.Second,
-		MatchStart:          WindowLimit{Limit: 30, Window: time.Minute},
+		MatchStart:          WindowLimit{Limit: 15, Window: time.Minute},
 		BottlePost:          WindowLimit{Limit: 10, Window: 24 * time.Hour},
 		BottlePick:          WindowLimit{Limit: 50, Window: 24 * time.Hour},
 		PrivateLinkCreate:   WindowLimit{Limit: 20, Window: 24 * time.Hour},

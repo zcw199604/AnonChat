@@ -3,6 +3,8 @@ import { useUiStore } from '../stores/ui'
 const REASON_TEXT: Record<string, string> = {
   banned: '你已被封禁',
   identity_reset: '身份已重置',
+  duplicate_session: '当前身份已在其他环境登录，请先在其他环境退出后重试',
+  ip_conn_limit: '当前网络下的连接数已达上限，请关闭其他页面或设备后重试',
 }
 
 /** 被踢出后的全屏提示（不再自动重连）。 */

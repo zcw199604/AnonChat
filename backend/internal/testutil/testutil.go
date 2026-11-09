@@ -46,6 +46,7 @@ import (
 
 // Config 汇总测试服务的可覆盖配置。
 type Config struct {
+	LimitSettings    *moderation.LimitSettings
 	VerificationMode string
 	EncKey           []byte
 	HmacKey          []byte
@@ -156,10 +157,20 @@ func runMigrations(t *testing.T, url string) {
 // Truncate 清空身份/验证相关表，确保测试之间互不影响。
 func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	const q = `TRUNCATE identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_users, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes, character_cards, media_folders, media_items, bots, bot_usage, bot_settings RESTART IDENTITY CASCADE`
+	const q = `TRUNCATE identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes, character_cards, media_folders, media_items, bots, bot_usage, bot_settings RESTART IDENTITY CASCADE`
 	if _, err := pool.Exec(context.Background(), q); err != nil {
 		t.Fatalf("清空表失败: %v", err)
 	}
+	if _, err := pool.Exec(context.Background(), "DELETE FROM admin_users"); err != nil {
+		t.Fatalf("清空管理员失败: %v", err)
+	}
+	// 保留配置种子行，并恢复默认，避免规则修改在测试之间泄漏。
+	for _, meta := range moderation.RuleRegistry() {
+		if _, err := pool.Exec(context.Background(), "UPDATE rate_limit_rules SET limit_count=$2,window_seconds=$3,ban_seconds=$4,enabled=true,updated_by=NULL,updated_at=now() WHERE key=$1", string(meta.Key), meta.DefaultLimit, meta.DefaultWindowSeconds, meta.DefaultBanSeconds); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 }
 
 // MustServer 构建一个完整的 HTTP 测试服务。
@@ -170,6 +181,33 @@ func MustServer(t *testing.T, pool *pgxpool.Pool, c Config) *httptest.Server {
 // MustEnv 构建完整测试环境（含 api.Deps）。
 func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 	t.Helper()
+
+	// 可选动态配置覆盖默认 AllowAll；显式测试替身仍优先。
+	if settings := c.LimitSettings; settings != nil {
+		assign := func(target *moderation.RateLimiter, key moderation.RuleKey) {
+			if *target == nil {
+				*target = settings.Limiter(key)
+			}
+		}
+		assign(&c.IdentityLimiter, moderation.RuleIdentityCreate)
+		assign(&c.VerifyCooldown, moderation.RuleSMSPerPhone)
+		assign(&c.VerifyPhoneDay, moderation.RuleSMSPerPhoneDaily)
+		assign(&c.VerifyIPDay, moderation.RuleSMSPerIPDaily)
+		assign(&c.ReportLimiter, moderation.RuleReportDaily)
+		assign(&c.MatchLimiter, moderation.RuleMatchStart)
+		assign(&c.BottlePostLimiter, moderation.RuleBottlePost)
+		assign(&c.BottlePickLimiter, moderation.RuleBottlePick)
+		assign(&c.PrivateCreateLimiter, moderation.RulePrivateLinkCreate)
+		assign(&c.PasswordLimiter, moderation.RulePrivateLinkPassword)
+		assign(&c.AdminLoginLimiter, moderation.RuleAdminLogin)
+		assign(&c.BroadcastLimiter, moderation.RuleBroadcastPost)
+		assign(&c.StoryLimiter, moderation.RuleStoryCreate)
+		assign(&c.VIPPerIDLimiter, moderation.RuleVIPRedeemPerID)
+		assign(&c.VIPPerIPLimiter, moderation.RuleVIPRedeemPerIP)
+		assign(&c.NicknameShuffle, moderation.RuleNicknameShuffle)
+		assign(&c.NicknameSet, moderation.RuleNicknameSet)
+		assign(&c.BotSettingsTestLimiter, moderation.RuleBotSettingsTest)
+	}
 
 	cfg := buildConfig(c)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -187,7 +225,7 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 	if idLimiter == nil {
 		idLimiter = moderation.AllowAll()
 	}
-	idSvc := identity.NewService(pool, logger, idLimiter, identity.WithClock(clock))
+	idSvc := identity.NewService(pool, logger, idLimiter, identity.WithClock(clock), identity.WithLimitSettings(c.LimitSettings))
 	idHandler := identity.NewHandler(idSvc, resolver, logger, cfg.VerificationMode)
 
 	banSvc := moderation.NewBanService(pool, nil, moderation.WithBanClock(clock))
@@ -209,7 +247,7 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 		verHandler = verify.NewHandler(verSvc, resolver, logger)
 	}
 
-	gateway := realtime.NewGateway(realtime.Options{AllowedOrigins: cfg.AllowedOrigins},
+	gateway := realtime.NewGateway(realtime.Options{AllowedOrigins: cfg.AllowedOrigins, LimitSettings: c.LimitSettings},
 		logger, idSvc, banSvc, idSvc, resolver)
 	banSvc.SetKicker(gateway.Hub())
 
@@ -226,6 +264,7 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 		conversation.WithClock(clock),
 		conversation.WithFilter(filter),
 		conversation.WithLimiter(msgLimiter),
+		conversation.WithLimitSettings(c.LimitSettings),
 		conversation.WithRoomMessageLimiter(moderation.NewTokenBucket(1, 1)),
 	)
 	convSvc.RegisterWS(gateway.Router(), cfg.VerificationMode)
@@ -275,6 +314,7 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 
 	adminSvc := admin.New(pool, logger, banSvc, gateway.Hub(),
 		admin.WithClock(clock),
+		admin.WithLimitSettings(c.LimitSettings),
 		admin.WithLoginLimiters(limiterOr(c.AdminLoginLimiter), limiterOr(c.AdminLoginLimiter)))
 
 	profileSvc := profile.New(pool, logger,
