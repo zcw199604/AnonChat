@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import type { AdminBot, BotSettings } from './botApi'
+import type { AdminBot, BotSettings, CharacterCard } from './botApi'
 import {
+  cardToInput,
+  copyCardInput,
   baseUrlChanged,
   botToForm,
   formToSettingsInput,
@@ -288,5 +290,38 @@ describe('settingsForm 的 Base URL 绑定', () => {
     expect(errors.some((e) => e.includes('修改 Base URL 需要重新填写 API Key'))).toBe(true)
     // 清除 key 时不报该错误。
     expect(validateSettingsForm(form, form.baseUrl)).toEqual([])
+  })
+})
+
+describe('角色卡复制', () => {
+  const card: CharacterCard = {
+    id: 'c1',
+    name: '小雨',
+    description: '大学生',
+    personality: '温柔',
+    scenario: '深夜',
+    firstMessage: '你好呀',
+    exampleDialogue: 'A: 嗨',
+    systemPrompt: '别承认是 AI',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+  }
+
+  it('cardToInput 去掉 id 与时间戳', () => {
+    const input = cardToInput(card)
+    expect(input).not.toHaveProperty('id')
+    expect(input).not.toHaveProperty('createdAt')
+    expect(input.systemPrompt).toBe('别承认是 AI')
+  })
+
+  it('复制时内容不变、名称加副本后缀', () => {
+    const copy = copyCardInput(card, ['小雨'])
+    expect(copy.name).toBe('小雨 副本')
+    expect(copy.personality).toBe('温柔')
+    expect(copy.exampleDialogue).toBe('A: 嗨')
+  })
+
+  it('副本名已被占用时递增编号', () => {
+    expect(copyCardInput(card, ['小雨', '小雨 副本', '小雨 副本 2']).name).toBe('小雨 副本 3')
   })
 })

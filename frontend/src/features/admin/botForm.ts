@@ -3,7 +3,16 @@
  * 字段名严格对应后端 `internal/bot/handlers.go` 的 JSON。
  */
 import type { Gender } from '../../lib/api/client'
-import type { AdminBot, AdminBotCreate, AdminBotUpdate, BotSettings, BotSettingsInput, PersonaMode } from './botApi'
+import type {
+  AdminBot,
+  AdminBotCreate,
+  AdminBotUpdate,
+  BotSettings,
+  BotSettingsInput,
+  CharacterCard,
+  CharacterCardInput,
+  PersonaMode,
+} from './botApi'
 import { MAX_AGE, MIN_AGE, PROVINCES, TAGS } from '../../lib/profileConsts'
 
 /** 性别选项（与资料页 ProfileCard 保持一致）。 */
@@ -293,4 +302,42 @@ export function validateSettingsForm(form: SettingsFormState, savedBaseUrl = '')
   if (minutes < 0 || minutes * 60 > 604800) errors.push('漂流瓶最短瓶龄需在 0–10080 分钟之间')
   if (form.timezone.trim() === '') errors.push('时区不能为空')
   return errors
+}
+
+// ---- 角色卡 ----
+
+/** 空白角色卡表单。 */
+export const EMPTY_CARD_INPUT: CharacterCardInput = {
+  name: '',
+  description: '',
+  personality: '',
+  scenario: '',
+  firstMessage: '',
+  exampleDialogue: '',
+  systemPrompt: '',
+}
+
+/** 已有角色卡 → 表单（去掉 id / 时间戳）。 */
+export function cardToInput(card: CharacterCard): CharacterCardInput {
+  return {
+    name: card.name,
+    description: card.description,
+    personality: card.personality,
+    scenario: card.scenario,
+    firstMessage: card.firstMessage,
+    exampleDialogue: card.exampleDialogue,
+    systemPrompt: card.systemPrompt,
+  }
+}
+
+/**
+ * 复制角色卡：内容原样带过来，名称加「副本」后缀；
+ * 若该名称已存在则依次尝试「副本 2」「副本 3」…，避免列表里出现同名卡。
+ */
+export function copyCardInput(card: CharacterCard, existingNames: string[] = []): CharacterCardInput {
+  const taken = new Set(existingNames)
+  const base = `${card.name} 副本`
+  let name = base
+  for (let i = 2; taken.has(name); i++) name = `${base} ${i}`
+  return { ...cardToInput(card), name }
 }

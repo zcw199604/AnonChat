@@ -186,6 +186,86 @@ export function Field({
 export const inputClass =
   'w-full rounded-sm border border-lobby-line bg-lobby-bg px-2.5 py-1.5 text-sm text-lobby-ink placeholder:text-lobby-sub/70'
 
+const MODAL_WIDTH = {
+  sm: 'max-w-sm',
+  md: 'max-w-lg',
+  lg: 'max-w-2xl',
+  xl: 'max-w-3xl',
+} as const
+
+/**
+ * 通用模态框：遮罩点击 / ESC 关闭，打开时焦点移入；
+ * 内容区可滚动，footer 固定在底部（适合长表单）。
+ */
+export function Modal({
+  open,
+  title,
+  description,
+  size = 'sm',
+  closeDisabled = false,
+  children,
+  footer,
+  onClose,
+}: {
+  open: boolean
+  title: string
+  description?: ReactNode
+  size?: keyof typeof MODAL_WIDTH
+  /** 提交中禁止关闭（遮罩与 ESC 都无效）。 */
+  closeDisabled?: boolean
+  children?: ReactNode
+  footer?: ReactNode
+  onClose: () => void
+}) {
+  const boxRef = useRef<HTMLDivElement>(null)
+  const titleId = useId()
+
+  // 打开时把焦点移进对话框，方便键盘操作。
+  useEffect(() => {
+    if (!open) return
+    boxRef.current?.focus()
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !closeDisabled) onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose, closeDisabled])
+
+  if (!open) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={() => {
+        if (!closeDisabled) onClose()
+      }}
+    >
+      <div
+        ref={boxRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className={`animate-fade-up flex max-h-[90vh] w-full flex-col rounded-panel border border-lobby-line bg-lobby-card shadow-soft outline-none ${MODAL_WIDTH[size]}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="shrink-0 px-5 pt-5">
+          <h2 id={titleId} className="text-base font-semibold text-lobby-ink">
+            {title}
+          </h2>
+          {description && <div className="mt-2 text-sm text-lobby-sub">{description}</div>}
+        </div>
+        {children && <div className="min-h-0 flex-1 overflow-y-auto px-5 pt-3">{children}</div>}
+        {footer && <div className="flex shrink-0 justify-end gap-2 px-5 pt-4 pb-5">{footer}</div>}
+      </div>
+    </div>
+  )
+}
+
 /** 受控确认对话框：遮罩/ESC 关闭，确认按钮带 loading。 */
 export function ConfirmDialog({
   open,
@@ -209,25 +289,6 @@ export function ConfirmDialog({
   onClose: () => void
 }) {
   const [busy, setBusy] = useState(false)
-  const boxRef = useRef<HTMLDivElement>(null)
-  const titleId = useId()
-
-  // 打开时把焦点移进对话框，方便键盘操作。
-  useEffect(() => {
-    if (!open) return
-    boxRef.current?.focus()
-  }, [open])
-
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-
-  if (!open) return null
 
   async function handleConfirm() {
     setBusy(true)
@@ -241,34 +302,25 @@ export function ConfirmDialog({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        ref={boxRef}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="animate-fade-up w-full max-w-sm rounded-panel border border-lobby-line bg-lobby-card p-5 shadow-soft outline-none"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 id={titleId} className="text-base font-semibold text-lobby-ink">
-          {title}
-        </h2>
-        {description && <div className="mt-2 text-sm text-lobby-sub">{description}</div>}
-        {children && <div className="mt-3">{children}</div>}
-        <div className="mt-5 flex justify-end gap-2">
+    <Modal
+      open={open}
+      title={title}
+      description={description}
+      closeDisabled={busy}
+      onClose={onClose}
+      footer={
+        <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             {cancelText}
           </Button>
           <Button variant={danger ? 'danger' : 'primary'} loading={busy} onClick={() => void handleConfirm()}>
             {confirmText}
           </Button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      {children}
+    </Modal>
   )
 }
 
