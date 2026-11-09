@@ -25,11 +25,12 @@ test('F 资料保存后刷新仍然保留', async ({ browser }) => {
   await page.context().close()
 })
 
-test('G 兑换激活码后 VipLock 消失', async ({ browser }) => {
+test('G 兑换激活码后首页显示 VIP 徽标', async ({ browser }) => {
   const page = await openHome(browser)
 
-  // 兑换前：匹配偏好区域被 VipLock 遮住。
-  await expect(page.getByTestId('vip-lock')).toBeVisible()
+  // 兑换前：首页已没有 VipLock（匹配偏好区块已移除），也不显示 VIP 徽标。
+  await expect(page.getByTestId('vip-lock')).toHaveCount(0)
+  await expect(page.getByText(/VIP 至 \d{4}-\d{2}-\d{2}/)).toHaveCount(0)
 
   await redeemVip(page)
   await expect(page.getByText('VIP 生效中')).toBeVisible({ timeout: 20000 })

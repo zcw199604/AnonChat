@@ -444,43 +444,19 @@ func (m *memoryMatcher) canPair(a, b *queueEntry) bool {
 			return false
 		}
 	}
-	// 硬条件（清流、性别、同省）不随时间放宽。
+	// 硬条件（清流）不随时间放宽；偏好（性别、同省）暂不参与匹配。
 	return compatible(a.ic.Profile, b.ic.Profile)
 }
 
 // compatible 判断两份资料快照是否双向兼容（how.md 3.4）。
-// 非 VIP 的 match_gender / match_same_province 一律视为 any/false（服务端判定）。
+// 当前只检查清流模式：偏好（match_gender / match_same_province）暂不参与匹配，
+// PrefProfile 里保留这些字段只是为了不波及上游查询与 bot 资料构造。
 func compatible(a, b PrefProfile) bool {
-	if a.CleanMode != b.CleanMode {
-		return false
-	}
-	if !genderMatches(a, b) || !genderMatches(b, a) {
-		return false
-	}
-	if !provinceMatches(a, b) || !provinceMatches(b, a) {
-		return false
-	}
-	return true
+	return a.CleanMode == b.CleanMode
 }
 
 // Compatible 是 compatible 的导出形式（how.md §8）：bot 包用同一规则筛选 bot。
 func Compatible(a, b PrefProfile) bool { return compatible(a, b) }
-
-// genderMatches 判断 a 的性别筛选是否接受 b（gender=secret 的人不满足任何性别筛选）。
-func genderMatches(a, b PrefProfile) bool {
-	if !a.VIP || a.MatchGender == "" || a.MatchGender == "any" {
-		return true
-	}
-	return b.Gender == a.MatchGender && (b.Gender == "male" || b.Gender == "female")
-}
-
-// provinceMatches 判断 a 的同省要求是否被 b 满足。
-func provinceMatches(a, b PrefProfile) bool {
-	if !a.VIP || !a.MatchSameProv {
-		return true
-	}
-	return a.Province != nil && b.Province != nil && *a.Province == *b.Province
-}
 
 // tagScore 返回两人标签的交集大小。
 func tagScore(a, b []string) int {

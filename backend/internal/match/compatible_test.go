@@ -5,7 +5,8 @@ import "testing"
 func strp(s string) *string { return &s }
 func i16p(v int16) *int16   { return &v }
 
-// TestCompatible 覆盖双向兼容判定的全部组合（how.md 3.4）。
+// TestCompatible 覆盖兼容判定的组合（how.md 3.4）：
+// 目前只有清流模式生效，性别/同省偏好在任何用户（含 VIP）身上都不参与匹配。
 func TestCompatible(t *testing.T) {
 	base := PrefProfile{Gender: "female", MatchGender: "any"}
 	cases := []struct {
@@ -38,46 +39,46 @@ func TestCompatible(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "VIP 只匹配女生但对方是男生",
+			name: "VIP 的性别偏好不再阻止配对（对方是男生）",
 			a:    PrefProfile{VIP: true, MatchGender: "female"},
 			b:    PrefProfile{Gender: "male"},
-			want: false,
+			want: true,
 		},
 		{
-			name: "性别保密的人不满足任何性别筛选",
+			name: "性别保密的人也兼容",
 			a:    PrefProfile{VIP: true, MatchGender: "female"},
 			b:    PrefProfile{Gender: "secret"},
-			want: false,
+			want: true,
 		},
 		{
-			name: "非 VIP 的性别偏好被服务端忽略",
+			name: "非 VIP 的性别偏好被忽略",
 			a:    PrefProfile{VIP: false, MatchGender: "female"},
 			b:    PrefProfile{Gender: "male"},
 			want: true,
 		},
 		{
-			name: "双向：一方筛选不通过即不配对",
+			name: "双向性别偏好都不再阻止配对",
 			a:    PrefProfile{VIP: true, MatchGender: "male", Gender: "female"},
 			b:    PrefProfile{VIP: true, MatchGender: "male", Gender: "female"},
-			want: false,
+			want: true,
 		},
 		{
-			name: "同省匹配且两省相同",
+			name: "同省偏好不再阻止配对（两省相同）",
 			a:    PrefProfile{VIP: true, MatchSameProv: true, Province: strp("浙江")},
 			b:    PrefProfile{Province: strp("浙江")},
 			want: true,
 		},
 		{
-			name: "同省匹配但省份不同",
+			name: "VIP 的同省偏好不再阻止配对（省份不同）",
 			a:    PrefProfile{VIP: true, MatchSameProv: true, Province: strp("浙江")},
 			b:    PrefProfile{Province: strp("江苏")},
-			want: false,
+			want: true,
 		},
 		{
-			name: "同省匹配但对方未设置省份",
+			name: "VIP 的同省偏好不再阻止配对（对方未设置省份）",
 			a:    PrefProfile{VIP: true, MatchSameProv: true, Province: strp("浙江")},
 			b:    PrefProfile{},
-			want: false,
+			want: true,
 		},
 		{
 			name: "非 VIP 的同省开关被忽略",
@@ -111,11 +112,18 @@ func TestTagScore(t *testing.T) {
 	}
 }
 
-func TestProvinceMatchesSecretGender(t *testing.T) {
-	// gender=secret 的人可以满足「不限性别」，但永不满足具体性别筛选。
+// TestCompatibleIgnoresProvince 保留原有的“性别保密 / 省份”组合检查：
+// 偏好不参与匹配，所以预置了性别与同省偏好的资料也应兼容。
+func TestCompatibleIgnoresProvince(t *testing.T) {
 	a := PrefProfile{VIP: true, MatchGender: "any"}
 	b := PrefProfile{Gender: "secret"}
 	if !compatible(a, b) {
 		t.Error("不限性别时应与保密性别的用户兼容")
+	}
+
+	p := PrefProfile{VIP: true, MatchSameProv: true, Province: strp("浙江")}
+	q := PrefProfile{Gender: "secret"}
+	if !compatible(p, q) {
+		t.Error("VIP 的同省偏好不应阻止配对")
 	}
 }

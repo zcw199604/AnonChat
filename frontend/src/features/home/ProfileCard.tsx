@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { Card } from '../../components/Card'
 import { Skeleton } from '../../components/Skeleton'
 import { GradientAvatar } from '../../components/GradientAvatar'
@@ -7,13 +6,12 @@ import { RangeSlider } from '../../components/RangeSlider'
 import { Segmented } from '../../components/Segmented'
 import { TagPicker } from '../../components/TagPicker'
 import { Toggle } from '../../components/Toggle'
-import { VipLock } from '../../components/VipLock'
 import { ResetIdentityConfirm } from '../../components/ResetIdentityConfirm'
 import { useIdentityStore } from '../../stores/identity'
 import { useUiStore } from '../../stores/ui'
 import { errorMessage } from '../../lib/api/errorMessages'
 import { setNickname, shuffleNickname } from '../../lib/api/client'
-import type { Gender, MatchPrefs, ProfileInfo } from '../../lib/api/client'
+import type { Gender, ProfileInfo } from '../../lib/api/client'
 import { useProfileSaver } from './useProfileSaver'
 import { MAX_AGE, MIN_AGE, PROVINCES } from '../../lib/profileConsts'
 
@@ -27,7 +25,6 @@ interface ProfileCardProps {
 
 /** 资料卡 + 匹配大卡（how.md 2.2）：接通 me、PATCH profile、昵称接口。 */
 export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProps) {
-  const nav = useNavigate()
   const me = useIdentityStore((s) => s.me)
   const publicCode = useIdentityStore((s) => s.publicCode)
   const setToast = useUiStore((s) => s.setToast)
@@ -56,10 +53,6 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
 
   function updateProfile(patch: Partial<ProfileInfo>) {
     saver.update({ profile: patch })
-  }
-
-  function updatePrefs(patch: Partial<MatchPrefs>) {
-    saver.update({ prefs: patch })
   }
 
   function toggleCollapsed() {
@@ -318,36 +311,6 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
             <span className="w-12 shrink-0 pt-1 text-xs text-lobby-sub">标签</span>
             <TagPicker selected={profile.tags} onChange={(tags) => updateProfile({ tags })} />
           </div>
-
-          {/* 匹配偏好（VIP 权益） */}
-          <VipLock active={!vipActive} onUnlock={() => nav('/vip')}>
-            <div className="space-y-3 rounded-sm border border-lobby-line p-3">
-              <div className="flex items-center gap-2">
-                <span className="w-12 shrink-0 text-xs text-lobby-sub">匹配</span>
-                <Segmented<'any' | 'male' | 'female'>
-                  ariaLabel="匹配性别"
-                  value={prefs.gender}
-                  options={[
-                    { value: 'male', label: '男' },
-                    { value: 'female', label: '女' },
-                    { value: 'any', label: '不限' },
-                  ]}
-                  onChange={(g) => updatePrefs({ gender: g })}
-                  disabled={!vipActive}
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="w-12 shrink-0 text-xs text-lobby-sub">同省</span>
-                <span className="text-xs text-lobby-ink">同省匹配</span>
-                <Toggle
-                  label="同省匹配"
-                  checked={prefs.sameProvince}
-                  onChange={(v) => updatePrefs({ sameProvince: v })}
-                  disabled={!vipActive}
-                />
-              </div>
-            </div>
-          </VipLock>
         </>
       )}
 

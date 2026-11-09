@@ -4,10 +4,9 @@ import { MemoryRouter } from 'react-router-dom'
 import HomePage from './HomePage'
 
 /**
- * 首页布局（how.md 2.2，审查意见 V1、V2）。
- * 视觉高度无法在 jsdom 中测量，这里用结构/类名断言固定住两件必须成立的事：
- * 1. 在线人数卡不再被拉伸（不占满整行高度），右列剩余高度交给匿名动态卡；
- * 2. 浮动胶囊只在视口 ≥1440px 时出现。
+ * 首页布局（how.md 2.2）：已移除在线人数卡、快捷入口 section、≥1440px 浮动胶囊
+ * （这些入口保留在侧边抽屉 DrawerNav 中），资料卡也不再包含 VIP 解锁的匹配偏好。
+ * 产品只保留「匿名匹配」，首页已移除话题房间与匿名动态两个区块。
  */
 
 // 视口宽度感知的 matchMedia 桩：让 min-width 断言按 innerWidth 求值。
@@ -34,6 +33,7 @@ function setViewport(width: number) {
 
 beforeEach(() => {
   stubMatchMedia()
+  setViewport(1280)
 })
 
 afterEach(() => {
@@ -48,34 +48,38 @@ function renderHome() {
   )
 }
 
-describe('首页右列布局', () => {
-  it('在线人数卡按内容自适应高度，匿名动态卡填满右列剩余高度', () => {
-    setViewport(1280)
+describe('首页不再显示在线人数与快捷入口', () => {
+  it('不存在在线人数卡、快捷入口 section 与浮动胶囊', () => {
     renderHome()
 
-    const online = screen.getByTestId('online-card')
-    // 不再用 h-full 拉满整行（此前被资料大卡撑出约 330px 空白）。
-    expect(online.className).not.toContain('h-full')
+    expect(screen.queryByTestId('online-card')).toBeNull()
+    expect(screen.queryByTestId('floating-entries')).toBeNull()
+    expect(screen.queryByText('快捷入口')).toBeNull()
+  })
 
-    const side = screen.getByTestId('home-side-column')
-    // 桌面端右列是纵向 flex，匿名动态占据剩余高度。
-    expect(side.className).toContain('md:flex')
-    expect(side.className).toContain('md:flex-col')
-    const feed = screen.getByTestId('feed-card-wrapper')
-    expect(feed.className).toContain('md:flex-1')
+  it('1440px 视口下也不出现浮动胶囊', () => {
+    setViewport(1440)
+    renderHome()
+
+    expect(screen.queryByTestId('floating-entries')).toBeNull()
+    expect(screen.queryByText('快捷入口')).toBeNull()
   })
 })
 
-describe('浮动胶囊的显示阈值', () => {
-  it('1280px 宽时不显示浮动胶囊（避免遮挡匿名动态卡）', () => {
-    setViewport(1280)
+describe('首页不显示话题房间与匿名动态', () => {
+  it('不存在话题房间与匿名动态区块', () => {
     renderHome()
-    expect(screen.queryByTestId('floating-entries')).toBeNull()
+
+    expect(screen.queryByTestId('feed-card-wrapper')).toBeNull()
+    expect(screen.queryByText('话题房间')).toBeNull()
+    expect(screen.queryByText('匿名动态')).toBeNull()
   })
 
-  it('1440px 宽时显示浮动胶囊', () => {
+  it('1440px 视口下也不出现话题房间与匿名动态', () => {
     setViewport(1440)
     renderHome()
-    expect(screen.getByTestId('floating-entries')).toBeInTheDocument()
+
+    expect(screen.queryByText('话题房间')).toBeNull()
+    expect(screen.queryByText('匿名动态')).toBeNull()
   })
 })

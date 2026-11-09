@@ -25,7 +25,7 @@ test('I 广播：提交 → 管理员审核通过 → 首页可见', async ({ br
   // 首页广播卡可见。
   await user.goto('/')
   await expect(user.getByTestId('ws-connected')).toBeVisible({ timeout: 30000 })
-  // 首页广播卡与匿名动态都会出现这条广播。
+  // 首页广播卡会出现这条广播。
   await expect(user.getByText(content).first()).toBeVisible({ timeout: 20000 })
 
   await user.context().close()

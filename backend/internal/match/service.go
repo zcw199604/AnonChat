@@ -288,21 +288,14 @@ func (s *Service) sendFound(identityID, convID pgtype.UUID, peerMemberID int32, 
 	s.hub.SendToIdentity(identityID, env)
 }
 
-// effectiveFilters 计算服务端最终生效的匹配条件（非 VIP 的偏好被忽略）。
+// effectiveFilters 计算服务端最终生效的匹配条件（偏好暂不参与匹配，仅清流模式生效）。
 func (s *Service) effectiveFilters(ctx context.Context, ident *store.Identity) matchFilters {
-	out := matchFilters{Gender: "any"}
+	out := matchFilters{Gender: "any", SameProvince: false}
 	row, err := s.q.GetMatchProfile(ctx, ident.ID)
 	if err != nil {
 		return out
 	}
-	vip := row.VipUntil.Valid && row.VipUntil.Time.After(s.now())
 	out.CleanMode = row.CleanMode
-	if vip {
-		if row.MatchGender != "" {
-			out.Gender = row.MatchGender
-		}
-		out.SameProvince = row.MatchSameProvince
-	}
 	return out
 }
 

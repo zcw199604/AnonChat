@@ -30,7 +30,7 @@ func setProfile(t *testing.T, pool *pgxpool.Pool, id pgtype.UUID, gender string,
 
 func strptr(s string) *string { return &s }
 
-// TestMatchPrefsVIPGenderFilter 验证两个 VIP 的性别筛选是双向生效的（how.md 3.4）。
+// TestMatchPrefsVIPGenderFilter 验证 VIP 的性别偏好不再阻止配对（偏好暂不参与匹配）。
 func TestMatchPrefsVIPGenderFilter(t *testing.T) {
 	pool := testutil.MustPool(t)
 	testutil.Truncate(t, pool)
@@ -38,7 +38,7 @@ func TestMatchPrefsVIPGenderFilter(t *testing.T) {
 
 	male, tokMale := mkIdentity(t, pool, "male")
 	female, tokFemale := mkIdentity(t, pool, "female")
-	// 男生只匹配男生，女生只匹配女生 → 两者不兼容。
+	// 男生只匹配男生，女生只匹配女生 → 偏好不再生效，双方应当配对。
 	setProfile(t, pool, male.ID, "male", nil, false, "male", false, 30)
 	setProfile(t, pool, female.ID, "female", nil, false, "female", false, 30)
 
@@ -47,9 +47,10 @@ func TestMatchPrefsVIPGenderFilter(t *testing.T) {
 	matchStart(t, wsMale)
 	matchStart(t, wsFemale)
 
-	// 等一小段时间，确认没有 match.found。
-	expectNoFound(t, wsMale, 700*time.Millisecond)
-	expectNoFound(t, wsFemale, 700*time.Millisecond)
+	conv := mustFound(t, wsMale)
+	if other := mustFound(t, wsFemale); other != conv {
+		t.Fatalf("VIP 的性别偏好不应阻止配对，双方应配对: %s vs %s", conv, other)
+	}
 }
 
 // TestMatchPrefsVIPGenderMatches 验证性别相容的两个 VIP 能配对，且 match.found 带公开资料。
