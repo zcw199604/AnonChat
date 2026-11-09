@@ -63,6 +63,6 @@ export async function loginAdmin(browser: Browser): Promise<Page> {
   await page.getByLabel('用户名').fill(seed.adminUsername)
   await page.getByLabel('密码').fill(seed.adminPassword)
   await page.getByRole('button', { name: '登录' }).click()
-  await expect(page.getByRole('button', { name: '概览' })).toBeVisible({ timeout: 20000 })
+  await expect(page.getByRole('link', { name: '概览' })).toBeVisible({ timeout: 20000 })
   return page
 }

@@ -28,7 +28,7 @@ test('E 举报与封禁：举报消息、管理员封禁、被踢出且刷新后
   await admin.getByLabel('用户名').fill(E2E_ADMIN_USER)
   await admin.getByLabel('密码').fill(E2E_ADMIN_PASS)
   await admin.getByRole('button', { name: '登录' }).click()
-  await admin.getByRole('button', { name: '举报' }).click()
+  await admin.getByRole('link', { name: /举报处理/ }).click()
   await admin.getByText('harassment').first().click()
   await expect(admin.getByText('证据快照')).toBeVisible({ timeout: 20000 })
   await admin.getByLabel('封禁原因').fill('e2e-ban')

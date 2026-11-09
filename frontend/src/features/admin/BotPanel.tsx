@@ -26,6 +26,7 @@ import type { AdminBot, BotSettings, CharacterCard, CharacterCardInput, MediaFol
 import { errorMessage } from '../../lib/api/errorMessages'
 import { useUiStore } from '../../stores/ui'
 import { Toggle } from '../../components/Toggle'
+import { Segmented } from '../../components/Segmented'
 import {
   GENDER_OPTIONS,
   PROVINCE_OPTIONS,
@@ -67,25 +68,17 @@ export function BotPanel({ onError }: { onError: (e: unknown) => void }) {
   const [sub, setSub] = useState<SubPanel>('settings')
   return (
     <div className="space-y-3 text-sm">
-      <div className="flex flex-wrap gap-2">
-        {(
-          [
-            ['settings', '全局设置'],
-            ['bots', 'Bot'],
-            ['cards', '角色卡'],
-            ['media', '媒体库'],
-          ] as Array<[SubPanel, string]>
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            className={`px-3 py-1 rounded-sm text-xs ${sub === key ? 'bg-brand text-white' : 'bg-lobby-bg'}`}
-            onClick={() => setSub(key)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <Segmented<SubPanel>
+        ariaLabel="Bot 配置分区"
+        value={sub}
+        onChange={setSub}
+        options={[
+          { value: 'settings', label: '全局设置' },
+          { value: 'bots', label: 'Bot' },
+          { value: 'cards', label: '角色卡' },
+          { value: 'media', label: '媒体库' },
+        ]}
+      />
       {sub === 'settings' && <SettingsPanel onError={onError} />}
       {sub === 'bots' && <BotsPanel onError={onError} />}
       {sub === 'cards' && <CardsPanel onError={onError} />}

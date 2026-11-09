@@ -49,7 +49,7 @@ test('J 故事书完整流程：发起 → 认领 → 各发 5 条 → 结束 �
 
   // 管理员审核通过。
   const admin = await loginAdmin(browser)
-  await admin.getByRole('button', { name: '作品审核' }).click()
+  await admin.getByRole('link', { name: '作品审核' }).click()
   const workRow = admin.getByTestId('admin-work').filter({ hasText: title }).first()
   await expect(workRow).toBeVisible({ timeout: 20000 })
   await workRow.getByRole('button', { name: '通过' }).click()

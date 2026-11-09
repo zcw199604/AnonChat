@@ -16,7 +16,7 @@ test('I 广播：提交 → 管理员审核通过 → 首页可见', async ({ br
 
   // 管理员通过审核。
   const admin = await loginAdmin(browser)
-  await admin.getByRole('button', { name: '广播审核' }).click()
+  await admin.getByRole('link', { name: '广播审核' }).click()
   const row = admin.getByTestId('admin-broadcast').filter({ hasText: content }).first()
   await expect(row).toBeVisible({ timeout: 20000 })
   await row.getByRole('button', { name: '通过' }).click()
