@@ -1,6 +1,6 @@
 # 领域语言（术语表）
 
-> 以代码为准。最后同步：Bot 人设包、双核驱动与长期记忆（202611092002）。
+> 以代码为准。最后同步：外站匹配接入与用户媒体（202611131925）。
 
 | 推荐名称 | 代码命名 | 含义 | 禁用叫法 |
 |---|---|---|---|
@@ -68,3 +68,21 @@
 | 跑偏检测 | `OOC guard` / `ooc_guard` | 检查 Markdown、设定泄露、客服腔和超长；不检测或改写 AI 身份表述 |
 
 复制角色卡保留所有可编辑字段，来源记为手动，不复制表情媒体。
+
+## 外站匹配与媒体
+
+适用模块：`match`、`external`、`media`、`conversation` 与 `jobs`。来源：[外站匹配接入与用户媒体方案](../plan/202611131925_external-match-bridge/how.md)。
+
+| 推荐名称 | 代码命名 | 含义 | 禁用叫法 |
+|---|---|---|---|
+| 外站 | `provider`（`chat2019` / `wanfeng`） | 接入的第三方匿名聊天站点 | 上游、线路（业务文档中） |
+| 外站阶段 | `phaseExternal` | 本站等待之后、bot 兜底之前的外站匹配阶段 | — |
+| 匹配代次 | `attempt` | 每轮外站匹配唯一编号；旧代次的开始、取消或结果不能影响新一轮 | — |
+| 兜底阶段 | `phaseFallback` | 外站阶段结束后等待 bot 的阶段 | — |
+| 外站会话 | `external_conversations` | 本站用户与外站对方组成的 `match` 会话 | 桥接会话 |
+| 影子身份 | `external_peers.identity_id` / `peerIdent` | 同一外站用户在本站复用的匿名身份，用于消息管线与屏蔽 | 虚拟用户、外站 bot |
+| 外站账号 | `external_bindings` | 本站匿名身份在某个外站的绑定账号；昵称独立随机生成 | — |
+| Bridge | `external.Bridge` | 外站连接、帧翻译及消息/媒体中转模块 | — |
+| 媒体来源 | `media_items.source` | `library` 后台媒体库、`user` 用户上传、`external` 外站下载 | — |
+| 媒体归属 | `owner_identity_id` | 用户媒体的上传身份；library/external 来源为空。用户仅能发送自己的 `user` 媒体 | — |
+| 内部媒体 token | 每个 link 登记的随机 token | 媒体转发的一次性引用；普通文本不能触发媒体读取 | 媒体 UUID（两者不同） |

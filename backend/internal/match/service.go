@@ -191,7 +191,7 @@ func (s *Service) handleLeave(ctx context.Context, c *realtime.Conn, env realtim
 	c.SendEvent(realtime.TypeAck, env.ID, nil)
 }
 
-// onPair 在匹配 goroutine 内被调用：创建会话、订阅双方连接、推送 match.found。
+// onPair 在独立 goroutine 中执行：创建会话、订阅双方连接、推送 match.found。
 func (s *Service) onPair(ae, be *queueEntry) error {
 	a, b := ae.ident, be.ident
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -426,4 +426,74 @@ func uuidSet(ids []pgtype.UUID) map[pgtype.UUID]struct{} {
 		set[id] = struct{}{}
 	}
 	return set
+}
+
+// ExternalHooks 将 Bridge 的记录写入同一事务，并控制提交后的内存发布。
+type ExternalHooks struct {
+	// OnCreated 在创建会话的事务中执行。
+	OnCreated func(context.Context, pgx.Tx, pgtype.UUID) error
+	// Activate 必须在 link 锁内确认状态并调用 publish；返回 false 时不得调用 publish。
+	Activate func(pgtype.UUID, func()) bool
+}
+
+// SetExternalMatcher 必须在 Run 前调用；online 与 Plan 均只读内存。
+func (s *Service) SetExternalMatcher(x ExternalMatcher, online func() int) {
+	s.matcher.external, s.matcher.online = x, online
+}
+
+// ExternalFound 在匹配 goroutine 之外完成认领、建会话和激活。
+// 完成时交还在途计数；失败回队还必须通过意图版本校验。
+func (s *Service) ExternalFound(ctx context.Context, userID pgtype.UUID, attempt uint64, peer ExternalPeer, hooks ExternalHooks) (pgtype.UUID, error) {
+	var claim externalClaim
+	s.matcher.do(command{kind: cmdClaimAttempt, id: userID, attempt: attempt, claim: &claim})
+	if claim.entry == nil {
+		return pgtype.UUID{}, ErrNotQueued
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	activated := false
+	defer func() {
+		kind := cmdRequeueExternal
+		if activated {
+			kind = cmdExternalDone
+		}
+		s.matcher.do(command{kind: kind, entry: claim.entry, intentSeq: claim.intentSeq})
+	}()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	conv, members, err := s.convSvc.Create(ctx, tx, store.ConversationKindMatch, false, userID, peer.IdentityID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if len(members) != 2 {
+		return pgtype.UUID{}, errInvalidPair
+	}
+	if hooks.OnCreated != nil {
+		if err := hooks.OnCreated(ctx, tx, conv.ID); err != nil {
+			return pgtype.UUID{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return pgtype.UUID{}, err
+	}
+	// publish 只进行 hub 内存操作。Bridge 在 link 锁内调用它，保证 found 与结束事件的顺序。
+	publish := func() {
+		s.hub.SubscribeIdentity(userID, conv.ID)
+		s.hub.SubscribeIdentity(peer.IdentityID, conv.ID)
+		s.sendFound(userID, conv.ID, members[1].MemberID, peer.Profile)
+	}
+	if hooks.Activate == nil || !hooks.Activate(conv.ID, publish) {
+		endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := s.convSvc.End(endCtx, conv.ID, "peer_left"); err != nil {
+			s.logger.Error("外站匹配：拒绝激活后结束会话失败", "conversation_id", conv.ID.String(), "error", err)
+			return pgtype.UUID{}, errors.Join(ErrActivationRejected, err)
+		}
+		return pgtype.UUID{}, ErrActivationRejected
+	}
+	activated = true
+	return conv.ID, nil
 }

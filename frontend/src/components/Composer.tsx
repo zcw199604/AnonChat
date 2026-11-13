@@ -17,6 +17,7 @@ const EMOJIS = [
 interface ComposerProps {
   onSend: (body: string) => void
   onTyping?: () => void
+  onSendMedia?: (file: File) => Promise<void>
   maxChars?: number
   disabled?: boolean
 }
@@ -24,10 +25,26 @@ interface ComposerProps {
 const TYPING_THROTTLE_MS = 3000
 
 /** 输入框：Enter 发送/Shift+Enter 换行、字数限制、表情面板、输入中节流。暗色玻璃风格。 */
-export function Composer({ onSend, onTyping, maxChars = 1000, disabled }: ComposerProps) {
+export function Composer({ onSend, onTyping, onSendMedia, maxChars = 1000, disabled }: ComposerProps) {
   const [value, setValue] = useState('')
   const [showEmoji, setShowEmoji] = useState(false)
   const lastTyping = useRef(Number.NEGATIVE_INFINITY)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [mediaError, setMediaError] = useState('')
+
+  async function sendFile(file: File) {
+    if (!onSendMedia || uploading || disabled) return
+    setUploading(true)
+    setMediaError('')
+    try {
+      await onSendMedia(file)
+    } catch (e) {
+      setMediaError(e instanceof Error ? e.message : '媒体发送失败，请重试')
+    } finally {
+      setUploading(false)
+    }
+  }
 
   const len = [...value].length
   const tooLong = len > maxChars
@@ -69,6 +86,32 @@ export function Composer({ onSend, onTyping, maxChars = 1000, disabled }: Compos
         </div>
       )}
       <div className="flex items-end gap-2">
+        {onSendMedia && (
+          <>
+            <input
+              ref={fileInput}
+              className="hidden"
+              type="file"
+              aria-label="选择图片或视频"
+              accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm"
+              disabled={disabled || uploading}
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                e.target.value = ''
+                if (file) void sendFile(file)
+              }}
+            />
+            <button
+              type="button"
+              aria-label="发送图片或视频"
+              className="rounded-sm px-2 py-1 text-night-ink transition duration-150 ease-out hover:bg-glass disabled:opacity-40"
+              disabled={disabled || uploading}
+              onClick={() => fileInput.current?.click()}
+            >
+              {uploading ? '上传中…' : '📎'}
+            </button>
+          </>
+        )}
         <button
           type="button"
           aria-label="表情"
@@ -104,6 +147,7 @@ export function Composer({ onSend, onTyping, maxChars = 1000, disabled }: Compos
       <div className={`mt-1 text-[11px] ${tooLong ? 'text-danger' : 'text-night-sub'}`}>
         {len} / {maxChars}
       </div>
+      {mediaError && <p role="alert" className="mt-1 text-xs text-danger">{mediaError}</p>}
     </div>
   )
 }

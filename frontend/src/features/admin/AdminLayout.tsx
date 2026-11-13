@@ -48,6 +48,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: '系统',
     items: [
       { to: '/admin/bot', label: 'Bot 配置' },
+      { to: '/admin/external', label: '外站接入' },
       { to: '/admin/audit', label: '审计日志' },
     ],
   },

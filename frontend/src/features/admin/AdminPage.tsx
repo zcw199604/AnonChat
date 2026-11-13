@@ -18,6 +18,7 @@ import { BroadcastsPage } from './pages/BroadcastsPage'
 import { WorksPage } from './pages/WorksPage'
 import { AuditPage } from './pages/AuditPage'
 import { BotConfigPage } from './pages/BotConfigPage'
+import { ExternalPage } from './pages/ExternalPage'
 
 /**
  * 管理后台入口：只负责登录态探测，之后把渲染交给内嵌路由。
@@ -83,6 +84,7 @@ export default function AdminPage() {
           <Route path="broadcasts" element={<BroadcastsPage />} />
           <Route path="works" element={<WorksPage />} />
           <Route path="bot" element={<BotConfigPage />} />
+          <Route path="external" element={<ExternalPage />} />
           <Route path="audit" element={<AuditPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/admin" replace />} />

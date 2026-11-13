@@ -214,6 +214,19 @@ export function listRooms(): Promise<RoomInfo[]> {
 
 // ---- 会话消息 ----
 
+export interface UploadedMedia {
+  mediaId: string
+  kind: 'image' | 'video'
+}
+
+export async function uploadMedia(file: File): Promise<UploadedMedia> {
+  const body = new FormData()
+  body.append('file', file)
+  return readResponse<UploadedMedia>(await fetch('/api/media/upload', {
+    method: 'POST', credentials: 'same-origin', body,
+  }))
+}
+
 export interface ChatMessage {
   id: number
   memberId: number

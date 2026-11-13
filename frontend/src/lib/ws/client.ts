@@ -11,10 +11,16 @@ export interface Envelope {
 
 export type OutboxStatus = 'sending' | 'sent' | 'failed'
 
+export interface MessageMedia {
+  kind: 'image' | 'video'
+  mediaId: string
+}
+
 export interface OutboxItem {
   clientMsgId: string
   conversationId: string
   body: string
+  media?: MessageMedia
   status: OutboxStatus
   messageId?: number
   errorMessage?: string
@@ -214,9 +220,9 @@ export class WsClient {
   }
 
   /** 发送聊天消息，返回 clientMsgId；状态通过 outbox 事件更新。 */
-  sendMessage(conversationId: string, body: string): { clientMsgId: string } {
+  sendMessage(conversationId: string, body: string, media?: MessageMedia): { clientMsgId: string } {
     const clientMsgId = genId()
-    const item: OutboxItem = { clientMsgId, conversationId, body, status: 'sending' }
+    const item: OutboxItem = { clientMsgId, conversationId, body, media, status: 'sending' }
     this.outbox.set(clientMsgId, item)
     this.emitOutbox(item)
     this.dispatchSend(item)
@@ -243,7 +249,8 @@ export class WsClient {
     this.sendRequestWithID(id, 'msg.send', {
       conversationId: item.conversationId,
       clientMsgId: item.clientMsgId,
-      kind: 'text',
+      kind: item.media?.kind ?? 'text',
+      ...(item.media ? { mediaId: item.media.mediaId } : {}),
       body: item.body,
     })
       .then((res) => {

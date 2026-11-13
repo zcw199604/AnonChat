@@ -274,6 +274,7 @@ function SettingsPanel({ onError }: { onError: (e: unknown) => void }) {
               value={form.fallbackSeconds}
               onChange={(e) => setForm({ ...form, fallbackSeconds: e.target.value })}
             />
+            <span className="block text-[11px] text-lobby-sub">开启外站接入后，此项不生效，兜底时机由外站接入设置决定</span>
           </label>
           <label className="block space-y-1">
             <span className="text-xs text-lobby-sub">漂流瓶最短瓶龄（分钟）</span>

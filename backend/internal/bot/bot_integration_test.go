@@ -115,7 +115,17 @@ func TestMatchFallbackEndToEnd(t *testing.T) {
 	}
 
 	// 用户发一条消息 → bot 回复（文本 + 图片）。
-	sendMessage(t, wsUser, botFound.ConversationID, "在吗")
+	waitFor(t, "开场模型调用", 3*time.Second, func() bool { return len(llm.snapshot()) >= 1 })
+	sendWS(t, wsUser, map[string]any{
+		"t":  realtime.TypeMsgSend,
+		"id": "s1",
+		"d": map[string]any{
+			"conversationId": botFound.ConversationID,
+			"clientMsgId":    newUUID(t).String(),
+			"kind":           "text",
+			"body":           "在吗",
+		},
+	})
 
 	var textSeen, imageSeen bool
 	var imageURL string

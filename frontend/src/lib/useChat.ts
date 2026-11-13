@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getWsClient } from './ws'
-import { conversationMessages, getConversation } from './api/client'
+import { conversationMessages, getConversation, uploadMedia } from './api/client'
 import type { ConversationDetail, ConversationPeer } from './api/client'
 import { useConversationsStore } from '../stores/conversations'
 import type { DisplayMessage } from '../components/MessageList'
@@ -16,6 +16,12 @@ export function useChat(conversationId: string | null) {
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [typing, setTyping] = useState(false)
   const typingTimer = useRef<number | null>(null)
+  const activeConversation = useRef<string | null>(conversationId)
+
+  useEffect(() => {
+    activeConversation.current = conversationId
+    return () => { activeConversation.current = null }
+  }, [conversationId])
 
   // 会话详情（myMemberId / peer）。
   useEffect(() => {
@@ -115,11 +121,18 @@ export function useChat(conversationId: string | null) {
     ws.sendMessage(conversationId, body)
   }
 
+  async function sendMedia(file: File) {
+    if (!conversationId) throw new Error('会话已结束')
+    const media = await uploadMedia(file)
+    if (activeConversation.current !== conversationId) throw new Error('会话已切换，请在当前会话重新发送')
+    ws.sendMessage(conversationId, '', media)
+  }
+
   /** 上报「输入中」（节流由 Composer 完成）。 */
   function sendTyping() {
     if (!conversationId) return
     ws.send('typing', { conversationId })
   }
 
-  return { messages, myMemberId, peer, detail: currentDetail, send, sendTyping, typing }
+  return { messages, myMemberId, peer, detail: currentDetail, send, sendMedia, sendTyping, typing }
 }

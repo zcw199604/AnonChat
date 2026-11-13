@@ -289,7 +289,7 @@ export default function MatchPage() {
           anonMode
           typing={chat.typing}
         />
-        <Composer onSend={chat.send} onTyping={chat.sendTyping} />
+        <Composer onSend={chat.send} onTyping={chat.sendTyping} onSendMedia={chat.sendMedia} />
       </GlassPanel>
       <BlockConfirm open={blockOpen} onCancel={() => setBlockOpen(false)} onConfirm={doBlock} />
       <ReportDialog

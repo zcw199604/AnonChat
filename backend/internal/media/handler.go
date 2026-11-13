@@ -9,6 +9,7 @@ import (
 
 	"github.com/anonchat/anonchat/backend/internal/admin"
 	"github.com/anonchat/anonchat/backend/internal/identity"
+	"github.com/anonchat/anonchat/backend/internal/moderation"
 	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
@@ -21,13 +22,28 @@ const uploadMemoryBuffer = 8 << 20
 
 // Handler 暴露媒体库的管理接口与用户侧媒体文件访问。
 type Handler struct {
-	svc *Service
-	adm *admin.Service
+	svc           *Service
+	adm           *admin.Service
+	uploadLimiter moderation.RateLimiter
 }
 
 // NewHandler 创建媒体 HTTP 处理器。adm 用于写操作审计日志，可以为 nil。
-func NewHandler(svc *Service, adm *admin.Service) *Handler {
-	return &Handler{svc: svc, adm: adm}
+func NewHandler(svc *Service, adm *admin.Service, opts ...HandlerOption) *Handler {
+	h := &Handler{svc: svc, adm: adm, uploadLimiter: moderation.NewFixedWindow(10, time.Minute)}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+type HandlerOption func(*Handler)
+
+func WithUploadLimiter(l moderation.RateLimiter) HandlerOption {
+	return func(h *Handler) {
+		if l != nil {
+			h.uploadLimiter = l
+		}
+	}
 }
 
 // folderResponse 是文件夹的对外表示。
@@ -264,6 +280,56 @@ func (h *Handler) AdminFileHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- 用户侧 ----
+
+// UploadUserHandler 处理 POST /api/media/upload：仅接受单个 file 字段。
+func (h *Handler) UploadUserHandler(w http.ResponseWriter, r *http.Request) {
+	ident, ok := identity.FromContext(r.Context())
+	if !ok {
+		httpx.WriteError(w, identity.ErrUnauthorized)
+		return
+	}
+	if !h.uploadLimiter.Allow(r.Context(), "media_upload:"+ident.ID.String()) {
+		httpx.WriteError(w, httpx.NewError(httpx.CodeRateLimited, "上传过于频繁，请稍后重试"))
+		return
+	}
+	// 为 multipart 元数据保留少量空间，文件本身仍由 saveFile 精确限制。
+	r.Body = http.MaxBytesReader(w, r.Body, h.svc.userMaxUploadBytes+(64<<10))
+	if err := r.ParseMultipartForm(uploadMemoryBuffer); err != nil {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			httpx.WriteError(w, httpx.NewError(httpx.CodeMediaRejected, "上传内容超过大小上限"))
+		} else {
+			httpx.WriteError(w, httpx.NewError(httpx.CodeInvalidRequest, "请求体格式错误"))
+		}
+		return
+	}
+	defer r.MultipartForm.RemoveAll()
+	files := r.MultipartForm.File["file"]
+	if len(files) != 1 || len(r.MultipartForm.File) != 1 {
+		httpx.WriteError(w, httpx.NewError(httpx.CodeInvalidRequest, "请上传一个文件"))
+		return
+	}
+	f, err := files[0].Open()
+	if err != nil {
+		httpx.WriteError(w, httpx.NewError(httpx.CodeInvalidRequest, "读取上传文件失败"))
+		return
+	}
+	defer f.Close()
+	item, err := h.svc.SaveUserItem(r.Context(), ident.ID, files[0].Filename, f)
+	if err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, struct {
+		MediaID   string `json:"mediaId"`
+		Kind      string `json:"kind"`
+		Mime      string `json:"mime"`
+		SizeBytes int64  `json:"sizeBytes"`
+	}{item.ID.String(), item.Kind, item.Mime, item.SizeBytes})
+}
 
 // ServeFileHandler 处理 GET /api/media/{id}。
 // 只有当媒体出现在请求者所属会话的未焚毁消息中时才放行；不存在与无权限都返回 404。

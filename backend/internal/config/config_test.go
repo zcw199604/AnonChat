@@ -3,10 +3,103 @@ package config
 import (
 	"encoding/base64"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestExternalConfig(t *testing.T) {
+	defaults := map[string]any{
+		"ExternalTimeout":                   30 * time.Second,
+		"ExternalWanfengHTTPProxy":          "",
+		"ExternalChat2019RandServerURL":     "http://v1.chat2019.cn/Act/WebService.asmx/getRandServer?ServerInfo=serversdeskry&_=",
+		"ExternalChat2019FallbackWS":        "",
+		"ExternalChat2019ImgServerURL":      "http://v1.chat2019.cn/asmx/method.asmx/getImgServer",
+		"ExternalWanfengBaseURL":            "https://wanfengniming.store",
+		"ExternalWanfengWSURL":              "",
+		"ExternalWanfengProtocolOverrides":  "",
+		"ExternalWanfengNewIdentityPerHour": 10,
+		"ExternalWanfengMediaHosts":         []string{"wanfengniming.store"},
+		"UserMediaMaxUploadMB":              20,
+	}
+	keys := []string{"EXTERNAL_TIMEOUT_SECONDS", "EXTERNAL_WANFENG_HTTP_PROXY", "EXTERNAL_CHAT2019_RAND_SERVER_URL", "EXTERNAL_CHAT2019_FALLBACK_WS", "EXTERNAL_CHAT2019_IMG_SERVER_URL", "EXTERNAL_WANFENG_BASE_URL", "EXTERNAL_WANFENG_WS_URL", "EXTERNAL_WANFENG_PROTOCOL_OVERRIDES", "EXTERNAL_WANFENG_NEW_IDENTITY_PER_HOUR", "EXTERNAL_WANFENG_MEDIA_HOSTS", "USER_MEDIA_MAX_UPLOAD_MB"}
+	clean := func(t *testing.T) {
+		t.Helper()
+		setEnv(t, validEnv())
+		for _, key := range keys {
+			t.Setenv(key, "")
+		}
+	}
+	t.Run("defaults", func(t *testing.T) {
+		clean(t)
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 通过字段名检查，让 RED 在尚未实现配置时也能编译并给出行为失败。
+		for name, want := range defaults {
+			field := reflect.ValueOf(cfg).Elem().FieldByName(name)
+			if !field.IsValid() {
+				t.Errorf("缺少配置 %s", name)
+				continue
+			}
+			if !reflect.DeepEqual(field.Interface(), want) {
+				t.Errorf("%s=%v, want %v", name, field.Interface(), want)
+			}
+		}
+	})
+	for key, values := range map[string][]string{
+		"EXTERNAL_WANFENG_HTTP_PROXY":            {"bad", "ftp://proxy.test", "http:///", "http://proxy.test:bad", "socks5://"},
+		"EXTERNAL_TIMEOUT_SECONDS":               {"0", "-1", "abc"},
+		"USER_MEDIA_MAX_UPLOAD_MB":               {"0", "-1", "abc"},
+		"EXTERNAL_WANFENG_NEW_IDENTITY_PER_HOUR": {"0", "-1", "abc"},
+		"EXTERNAL_WANFENG_PROTOCOL_OVERRIDES":    {"{"},
+	} {
+		for _, value := range values {
+			t.Run(key+"="+value, func(t *testing.T) {
+				clean(t)
+				t.Setenv(key, value)
+				_, err := Load()
+				if err == nil || !strings.Contains(err.Error(), key) {
+					t.Fatalf("期望 %s 校验错误, got %v", key, err)
+				}
+			})
+		}
+	}
+	t.Run("overrides", func(t *testing.T) {
+		clean(t)
+		for k, v := range map[string]string{"EXTERNAL_TIMEOUT_SECONDS": "12", "USER_MEDIA_MAX_UPLOAD_MB": "7", "EXTERNAL_WANFENG_NEW_IDENTITY_PER_HOUR": "2", "EXTERNAL_WANFENG_BASE_URL": "https://other.test", "EXTERNAL_WANFENG_MEDIA_HOSTS": "media.test, cdn.test", "EXTERNAL_WANFENG_PROTOCOL_OVERRIDES": `{"bucketImage":"test"}`} {
+			t.Setenv(k, v)
+		}
+		for _, proxy := range []string{"http://proxy.test:8080", "https://proxy.test", "socks5://proxy.test:1080"} {
+			t.Setenv("EXTERNAL_WANFENG_HTTP_PROXY", proxy)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := reflect.ValueOf(cfg).Elem()
+			for name, want := range map[string]any{"ExternalTimeout": 12 * time.Second, "UserMediaMaxUploadMB": 7, "ExternalWanfengNewIdentityPerHour": 2, "ExternalWanfengMediaHosts": []string{"media.test", "cdn.test"}, "ExternalWanfengHTTPProxy": proxy} {
+				field := got.FieldByName(name)
+				if !field.IsValid() || !reflect.DeepEqual(field.Interface(), want) {
+					t.Fatalf("%s 未读取覆盖值", name)
+				}
+			}
+		}
+	})
+	t.Run("media-host-default-follows-base", func(t *testing.T) {
+		clean(t)
+		t.Setenv("EXTERNAL_WANFENG_BASE_URL", "https://other.test:8443/path")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		field := reflect.ValueOf(cfg).Elem().FieldByName("ExternalWanfengMediaHosts")
+		if !field.IsValid() || !reflect.DeepEqual(field.Interface(), []string{"other.test"}) {
+			t.Fatal("媒体主机默认值应取 BaseURL 主机名")
+		}
+	})
+}
 
 // setEnv 是一个测试辅助函数，用于在测试期间设置环境变量并在结束后恢复。
 func setEnv(t *testing.T, kv map[string]string) {

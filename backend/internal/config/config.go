@@ -4,10 +4,12 @@ package config
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -16,6 +18,17 @@ import (
 
 // Config 保存应用运行所需的全部配置。
 type Config struct {
+	ExternalTimeout                   time.Duration
+	ExternalWanfengHTTPProxy          string
+	ExternalChat2019RandServerURL     string
+	ExternalChat2019FallbackWS        string
+	ExternalChat2019ImgServerURL      string
+	ExternalWanfengBaseURL            string
+	ExternalWanfengWSURL              string
+	ExternalWanfengProtocolOverrides  string
+	ExternalWanfengNewIdentityPerHour int
+	ExternalWanfengMediaHosts         []string
+	UserMediaMaxUploadMB              int
 	// Env 是运行环境：development | test | production。
 	Env string
 	// HTTPAddr 是 HTTP 服务监听地址，例如 :8080。
@@ -179,10 +192,64 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.loadExternal(); err != nil {
+		return nil, err
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// loadExternal 读取外站配置并校验格式；这里只解析配置，不连接外站。
+func (c *Config) loadExternal() error {
+	seconds, err := getInt("EXTERNAL_TIMEOUT_SECONDS", 30)
+	if err != nil {
+		return err
+	}
+	if seconds <= 0 || int64(seconds) > int64((1<<63-1)/time.Second) {
+		return fmt.Errorf("EXTERNAL_TIMEOUT_SECONDS 必须为正数且不超过 time.Duration 范围")
+	}
+	c.ExternalTimeout = time.Duration(seconds) * time.Second
+	c.UserMediaMaxUploadMB, err = getInt("USER_MEDIA_MAX_UPLOAD_MB", 20)
+	if err != nil {
+		return err
+	}
+	if c.UserMediaMaxUploadMB <= 0 {
+		return fmt.Errorf("USER_MEDIA_MAX_UPLOAD_MB 必须为正数")
+	}
+	c.ExternalWanfengNewIdentityPerHour, err = getInt("EXTERNAL_WANFENG_NEW_IDENTITY_PER_HOUR", 10)
+	if err != nil {
+		return err
+	}
+	if c.ExternalWanfengNewIdentityPerHour <= 0 {
+		return fmt.Errorf("EXTERNAL_WANFENG_NEW_IDENTITY_PER_HOUR 必须为正数")
+	}
+	c.ExternalWanfengHTTPProxy = getEnv("EXTERNAL_WANFENG_HTTP_PROXY", "")
+	if c.ExternalWanfengHTTPProxy != "" {
+		u, err := url.Parse(c.ExternalWanfengHTTPProxy)
+		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5") {
+			return fmt.Errorf("EXTERNAL_WANFENG_HTTP_PROXY 必须是合法的 http/https/socks5 URL")
+		}
+	}
+	c.ExternalChat2019RandServerURL = getEnv("EXTERNAL_CHAT2019_RAND_SERVER_URL", "http://v1.chat2019.cn/Act/WebService.asmx/getRandServer?ServerInfo=serversdeskry&_=")
+	c.ExternalChat2019FallbackWS = getEnv("EXTERNAL_CHAT2019_FALLBACK_WS", "")
+	c.ExternalChat2019ImgServerURL = getEnv("EXTERNAL_CHAT2019_IMG_SERVER_URL", "http://v1.chat2019.cn/asmx/method.asmx/getImgServer")
+	c.ExternalWanfengBaseURL = getEnv("EXTERNAL_WANFENG_BASE_URL", "https://wanfengniming.store")
+	c.ExternalWanfengWSURL = getEnv("EXTERNAL_WANFENG_WS_URL", "")
+	c.ExternalWanfengProtocolOverrides = getEnv("EXTERNAL_WANFENG_PROTOCOL_OVERRIDES", "")
+	if c.ExternalWanfengProtocolOverrides != "" && !json.Valid([]byte(c.ExternalWanfengProtocolOverrides)) {
+		return fmt.Errorf("EXTERNAL_WANFENG_PROTOCOL_OVERRIDES 必须是合法 JSON")
+	}
+	c.ExternalWanfengMediaHosts = splitList(os.Getenv("EXTERNAL_WANFENG_MEDIA_HOSTS"))
+	if len(c.ExternalWanfengMediaHosts) == 0 {
+		u, err := url.Parse(c.ExternalWanfengBaseURL)
+		if err != nil || u.Hostname() == "" {
+			return fmt.Errorf("EXTERNAL_WANFENG_BASE_URL 必须包含合法主机名")
+		}
+		c.ExternalWanfengMediaHosts = []string{u.Hostname()}
+	}
+	return nil
 }
 
 // validate 校验必填项和取值范围。

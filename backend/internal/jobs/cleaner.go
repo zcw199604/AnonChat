@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -17,6 +18,9 @@ import (
 const (
 	defaultBatchSize = 5000
 	defaultInterval  = 10 * time.Minute
+	orphanBatchSize  = 500
+	orphanMaxBatches = 20
+	orphanRetention  = 24 * time.Hour
 	smsRetention     = 24 * time.Hour
 	// botUsageRetention 是 bot 用量记录的固定保留期（窗口上限最多 7 天，不受影响）。
 	botUsageRetention = 30 * 24 * time.Hour
@@ -33,10 +37,12 @@ type Options struct {
 
 // Cleaner 执行保留期清理。
 type Cleaner struct {
-	q      *store.Queries
-	logger *slog.Logger
-	opts   Options
-	now    func() time.Time
+	pool         *pgxpool.Pool
+	mediaStorage interface{ Remove(string) error }
+	q            *store.Queries
+	logger       *slog.Logger
+	opts         Options
+	now          func() time.Time
 }
 
 // Option 用于配置 Cleaner（测试注入时钟）。
@@ -60,6 +66,7 @@ func New(pool *pgxpool.Pool, logger *slog.Logger, opts Options, options ...Optio
 		opts.Interval = defaultInterval
 	}
 	c := &Cleaner{
+		pool:   pool,
 		q:      store.New(pool),
 		logger: logger,
 		opts:   opts,
@@ -94,6 +101,13 @@ func (c *Cleaner) Start(ctx context.Context) {
 func (c *Cleaner) RunOnce(ctx context.Context) (map[string]int64, error) {
 	now := c.now()
 	stats := make(map[string]int64)
+
+	// 孤儿媒体先清理：本轮被保留期清理释放的媒体留到下一轮。
+	n, err := c.cleanOrphanMedia(ctx, ts(now.Add(-orphanRetention)))
+	stats["orphan_media"] = n
+	if err != nil {
+		return stats, err
+	}
 
 	msgCutoff := ts(now.Add(-c.opts.MessageRetention))
 	auditCutoff := ts(now.Add(-c.opts.AuditRetention))
@@ -253,4 +267,70 @@ func (c *Cleaner) loop(ctx context.Context, stats map[string]int64, name string,
 // ts 把 time.Time 转成 parameter 化的时间戳。
 func ts(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t, Valid: true}
+}
+
+// WithMediaStorage 复用媒体存储，在数据库提交后移除孤儿文件。
+func WithMediaStorage(storage interface{ Remove(string) error }) Option {
+	return func(c *Cleaner) { c.mediaStorage = storage }
+}
+
+// cleanOrphanMedia 每批使用 READ COMMITTED 的两个独立语句：
+// 先跳过发送持锁的行并锁候选，再在新快照下重查未焚毁引用后删除。
+func (c *Cleaner) cleanOrphanMedia(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	cursor := store.ListOrphanNonLibraryMediaParams{
+		Cutoff:         cutoff,
+		AfterCreatedAt: pgtype.Timestamptz{InfinityModifier: pgtype.NegativeInfinity, Valid: true},
+		AfterID:        pgtype.UUID{Valid: true},
+	}
+	var total int64
+	for range orphanMaxBatches {
+		candidates, keys, err := c.orphanMediaBatch(ctx, cursor)
+		if err != nil {
+			return total, err
+		}
+		total += int64(len(keys))
+		// 数据库事务已提交；磁盘失败不影响其余文件清理。
+		if c.mediaStorage != nil {
+			for _, key := range keys {
+				if err := c.mediaStorage.Remove(key); err != nil {
+					c.logger.Warn("删除孤儿媒体文件失败", "storage_key", key, "error", err)
+				}
+			}
+		}
+		if len(candidates) < orphanBatchSize {
+			break
+		}
+		last := candidates[len(candidates)-1]
+		cursor.AfterCreatedAt, cursor.AfterID = last.CreatedAt, last.ID
+	}
+	c.logger.Info("保留期清理", "table", "orphan_media", "rows", total)
+	return total, nil
+}
+
+func (c *Cleaner) orphanMediaBatch(ctx context.Context, cursor store.ListOrphanNonLibraryMediaParams) ([]store.ListOrphanNonLibraryMediaRow, []string, error) {
+	tx, err := c.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := store.New(tx)
+	candidates, err := q.ListOrphanNonLibraryMedia(ctx, cursor)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(candidates) == 0 {
+		return candidates, nil, nil
+	}
+	ids := make([]pgtype.UUID, len(candidates))
+	for i, row := range candidates {
+		ids[i] = row.ID
+	}
+	keys, err := q.DeleteOrphanNonLibraryMedia(ctx, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, err
+	}
+	return candidates, keys, nil
 }

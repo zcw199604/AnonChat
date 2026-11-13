@@ -3,6 +3,7 @@ package match
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -66,6 +67,57 @@ type BotCandidate struct {
 	Profile  PrefProfile
 }
 
+// ExternalPlan 是外站阶段的参数快照，读取时不访问数据库和网络。
+type ExternalPlan struct {
+	Enabled                 bool
+	OnlineThreshold         int
+	LocalWait, MatchTimeout time.Duration
+}
+
+// ExternalRequest 携带入队时预取的约束及本轮不可复用的代次。
+type ExternalRequest struct {
+	Identity *store.Identity
+	Context  IdentityContext
+	Attempt  uint64
+}
+
+// ExternalMatcher 由 Bridge 实现；只有 Plan 在匹配 goroutine 内调用。
+// StartMatch 立即返回，CancelMatch 只取消指定代次的匹配，不影响已建立的会话。
+type ExternalMatcher interface {
+	Plan() ExternalPlan
+	StartMatch(context.Context, ExternalRequest) error
+	CancelMatch(pgtype.UUID, uint64)
+}
+
+// ExternalPeer 是 Bridge 已准备好的影子身份及公开资料。
+type ExternalPeer struct {
+	IdentityID pgtype.UUID
+	Profile    PrefProfile
+}
+
+var (
+	ErrNoExternalProvider = errors.New("没有可用的外站")
+	ErrNotQueued          = errors.New("不在匹配队列中")
+	ErrActivationRejected = errors.New("外站会话激活失败")
+)
+
+type matchPhase int
+
+const (
+	phaseLocal matchPhase = iota
+	phaseExternal
+	phaseFallback
+)
+
+type intentState struct {
+	seq      uint64
+	inflight int
+}
+type externalClaim struct {
+	entry     *queueEntry
+	intentSeq uint64
+}
+
 // fallbackTimeout 是兜底流程里调用 PickBot 的超时。
 const fallbackTimeout = 5 * time.Second
 
@@ -80,6 +132,10 @@ const (
 	cmdFallbackDone
 	// cmdClaim 在匹配 goroutine 内原子地认领（移出）兜底条目。
 	cmdClaim
+	cmdExternalFailed
+	cmdClaimAttempt
+	cmdRequeueExternal
+	cmdExternalDone
 )
 
 type command struct {
@@ -90,11 +146,17 @@ type command struct {
 	entries []*queueEntry
 	done    chan struct{}
 	// entry/claimed 供兜底命令使用：entry 是目标条目，claimed 由匹配 goroutine 写回认领结果。
-	entry   *queueEntry
-	claimed *bool
+	entry     *queueEntry
+	claimed   *bool
+	attempt   uint64
+	intentSeq uint64
+	claim     *externalClaim
 }
 
 type queueEntry struct {
+	phase      matchPhase
+	phaseAt    time.Time
+	attempt    uint64
 	ident      *store.Identity
 	enqueuedAt time.Time
 	ic         IdentityContext
@@ -106,13 +168,17 @@ type queueEntry struct {
 
 // memoryMatcher 是单 goroutine 驱动的内存匹配器：队列操作经命令通道串行化，配对判断只在内存进行。
 type memoryMatcher struct {
-	prefetcher Prefetcher
-	onPair     func(a, b *queueEntry) error
-	relaxAfter time.Duration
-	tick       time.Duration
-	now        func() time.Time
-	cmds       chan command
-	queue      []*queueEntry
+	external    ExternalMatcher
+	online      func() int
+	nextAttempt uint64
+	intents     map[pgtype.UUID]*intentState
+	prefetcher  Prefetcher
+	onPair      func(a, b *queueEntry) error
+	relaxAfter  time.Duration
+	tick        time.Duration
+	now         func() time.Time
+	cmds        chan command
+	queue       []*queueEntry
 
 	// 兜底相关（SetBotFallback 之后才生效）。after 每次 tick 从 provider 现取（动态）。
 	provider  BotProvider
@@ -139,6 +205,7 @@ func NewMemoryMatcher(prefetcher Prefetcher, onPair func(a, b *queueEntry) error
 		tick:       tick,
 		now:        time.Now,
 		cmds:       make(chan command),
+		intents:    make(map[pgtype.UUID]*intentState),
 	}
 }
 
@@ -158,7 +225,9 @@ func (m *memoryMatcher) Run(ctx context.Context) {
 			}
 		case <-ticker.C:
 			m.tryMatchAll()
+			m.tryExternal()
 			m.tryFallback()
+			m.cleanupIntents()
 		}
 	}
 }
@@ -218,14 +287,18 @@ func (m *memoryMatcher) do(c command) {
 func (m *memoryMatcher) process(c command) {
 	switch c.kind {
 	case cmdEnqueue:
+		m.bumpIntent(c.ident.ID)
 		m.remove(c.ident.ID)
-		entry := &queueEntry{ident: c.ident, enqueuedAt: m.now(), ic: c.ic}
+		entry := &queueEntry{ident: c.ident, enqueuedAt: m.now(), phaseAt: m.now(), ic: c.ic}
 		m.queue = append(m.queue, entry)
 		m.setQueueLen(len(m.queue))
 		// 入队只与现有队列逐个比较（O(N)）。
-		m.tryPairFor(entry)
+		if !m.tryPairFor(entry) {
+			m.advanceExternal(entry, m.externalPlan(), m.now())
+		}
 		m.setQueueLen(len(m.queue))
 	case cmdCancel, cmdLeave:
+		m.bumpIntent(c.id)
 		m.remove(c.id)
 		m.setQueueLen(len(m.queue))
 	case cmdRequeueFront:
@@ -244,6 +317,42 @@ func (m *memoryMatcher) process(c command) {
 			c.entry.fallbackPending = false
 			c.entry.retryAt = m.now().Add(m.currentFallbackAfter())
 		}
+	case cmdExternalFailed:
+		e := c.entry
+		if m.contains(e) && e.phase == phaseExternal && e.attempt == c.attempt {
+			e.phase, e.phaseAt = phaseFallback, m.now()
+		}
+	case cmdClaimAttempt:
+		plan := m.externalPlan()
+		now := m.now()
+		for i, e := range m.queue {
+			if e.ident.ID != c.id || e.attempt != c.attempt || e.phase != phaseExternal || !now.Before(e.phaseAt.Add(plan.MatchTimeout)) {
+				continue
+			}
+			state := m.intents[c.id]
+			// 原有 cmdRequeueFront 可能在出队后的清理 tick 之后才放回条目。
+			if state == nil {
+				state = &intentState{}
+				m.intents[c.id] = state
+			}
+			state.inflight++
+			*c.claim = externalClaim{entry: e, intentSeq: state.seq}
+			// 认领不是取消；Bridge 正在把该 link 激活为会话。
+			m.queue = append(m.queue[:i], m.queue[i+1:]...)
+			m.setQueueLen(len(m.queue))
+			break
+		}
+	case cmdRequeueExternal, cmdExternalDone:
+		id := c.entry.ident.ID
+		state := m.intents[id]
+		if c.kind == cmdRequeueExternal && state.seq == c.intentSeq && !m.hasIdentity(id) {
+			c.entry.phase, c.entry.phaseAt = phaseFallback, m.now()
+			c.entry.fallbackPending = false
+			c.entry.retryAt = time.Time{}
+			m.queue = append([]*queueEntry{c.entry}, m.queue...)
+			m.setQueueLen(len(m.queue))
+		}
+		state.inflight--
 	case cmdClaim:
 		// 原子认领：条目仍在队列里才算认领成功（否则已被真人配走或用户取消）。
 		if m.contains(c.entry) {
@@ -260,7 +369,9 @@ func (m *memoryMatcher) process(c command) {
 func (m *memoryMatcher) remove(id pgtype.UUID) {
 	out := m.queue[:0]
 	for _, e := range m.queue {
-		if e.ident.ID != id {
+		if e.ident.ID == id {
+			m.cancelExternal(e)
+		} else {
 			out = append(out, e)
 		}
 	}
@@ -271,7 +382,9 @@ func (m *memoryMatcher) remove(id pgtype.UUID) {
 func (m *memoryMatcher) removeEntry(target *queueEntry) {
 	out := m.queue[:0]
 	for _, e := range m.queue {
-		if e != target {
+		if e == target {
+			m.cancelExternal(e)
+		} else {
 			out = append(out, e)
 		}
 	}
@@ -354,13 +467,20 @@ func (m *memoryMatcher) tryFallback() {
 	if after <= 0 {
 		return
 	}
+	externalEnabled := m.externalPlan().Enabled
 	now := m.now()
 	for _, e := range m.queue {
+		if externalEnabled && e.phase != phaseFallback {
+			continue
+		}
 		if e.fallbackPending {
 			continue
 		}
-		// 到期时间 = max(enqueuedAt + after, 上次失败后的重试时间)。
+		// 外站兜底从阶段起点立即尝试；原有模式仍从 enqueuedAt + after 起算。
 		due := e.enqueuedAt.Add(after)
+		if e.phase == phaseFallback {
+			due = e.phaseAt
+		}
 		if e.retryAt.After(due) {
 			due = e.retryAt
 		}
@@ -474,4 +594,87 @@ func tagScore(a, b []string) int {
 		}
 	}
 	return score
+}
+
+// externalPlan 只读取外站内存快照。SetExternalMatcher 必须在 Run 前调用。
+func (m *memoryMatcher) externalPlan() ExternalPlan {
+	if m.external == nil {
+		return ExternalPlan{}
+	}
+	return m.external.Plan()
+}
+
+func (m *memoryMatcher) tryExternal() {
+	plan, now := m.externalPlan(), m.now()
+	for _, e := range m.queue {
+		m.advanceExternal(e, plan, now)
+	}
+}
+
+func (m *memoryMatcher) advanceExternal(e *queueEntry, plan ExternalPlan, now time.Time) {
+	if m.external == nil {
+		return
+	}
+	if !plan.Enabled {
+		if e.phase == phaseExternal {
+			m.cancelExternal(e)
+			e.phase, e.phaseAt = phaseFallback, now
+		}
+		return
+	}
+	if e.phase == phaseLocal {
+		others := max(0, m.online()-1)
+		if others < plan.OnlineThreshold || !now.Before(e.phaseAt.Add(plan.LocalWait)) {
+			m.nextAttempt++
+			e.phase, e.phaseAt, e.attempt = phaseExternal, now, m.nextAttempt
+			go m.startExternal(e, e.attempt)
+		}
+	}
+	if e.phase == phaseExternal && !now.Before(e.phaseAt.Add(plan.MatchTimeout)) {
+		m.cancelExternal(e)
+		e.phase, e.phaseAt = phaseFallback, now
+	}
+}
+
+// startExternal 只在独立 goroutine 内执行；出错后才通过 do 交回状态所有者。
+func (m *memoryMatcher) startExternal(e *queueEntry, attempt uint64) {
+	ctx, cancel := context.WithTimeout(context.Background(), fallbackTimeout)
+	defer cancel()
+	if err := m.external.StartMatch(ctx, ExternalRequest{Identity: e.ident, Context: e.ic, Attempt: attempt}); err != nil {
+		m.do(command{kind: cmdExternalFailed, entry: e, attempt: attempt})
+	}
+}
+
+func (m *memoryMatcher) cancelExternal(e *queueEntry) {
+	if m.external != nil && e.phase == phaseExternal {
+		go m.external.CancelMatch(e.ident.ID, e.attempt)
+	}
+}
+
+func (m *memoryMatcher) bumpIntent(id pgtype.UUID) {
+	state := m.intents[id]
+	if state == nil {
+		state = &intentState{}
+		m.intents[id] = state
+	}
+	state.seq++
+}
+func (m *memoryMatcher) hasIdentity(id pgtype.UUID) bool {
+	for _, e := range m.queue {
+		if e.ident.ID == id {
+			return true
+		}
+	}
+	return false
+}
+func (m *memoryMatcher) cleanupIntents() {
+	queued := make(map[pgtype.UUID]bool, len(m.queue))
+	for _, e := range m.queue {
+		queued[e.ident.ID] = true
+	}
+	for id, state := range m.intents {
+		if state.inflight == 0 && !queued[id] {
+			delete(m.intents, id)
+		}
+	}
 }

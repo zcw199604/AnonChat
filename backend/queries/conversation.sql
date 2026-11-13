@@ -164,3 +164,7 @@ FROM conversation_members cm
 JOIN identities i ON i.id = cm.identity_id
 WHERE cm.conversation_id = $1 AND cm.identity_id <> $2 AND cm.left_at IS NULL
 ORDER BY cm.member_id;
+
+-- name: GetMessageForRelay :one
+SELECT id, conversation_id, sender_identity_id, kind, body, media_id
+FROM messages WHERE id = $1;

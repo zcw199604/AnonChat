@@ -145,7 +145,7 @@ export default function PrivateJoinPage() {
             anonMode
             typing={chat.typing}
           />
-          <Composer onSend={chat.send} onTyping={chat.sendTyping} />
+          <Composer onSend={chat.send} onTyping={chat.sendTyping} onSendMedia={chat.sendMedia} />
         </GlassPanel>
         {confirmDestroy && (
           <div

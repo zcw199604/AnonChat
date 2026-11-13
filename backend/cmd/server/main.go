@@ -25,6 +25,7 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/api"
 	"github.com/anonchat/anonchat/backend/internal/config"
 	"github.com/anonchat/anonchat/backend/internal/jobs"
+	"github.com/anonchat/anonchat/backend/internal/media"
 	"github.com/anonchat/anonchat/backend/internal/platform/db"
 	"github.com/anonchat/anonchat/backend/migrations"
 )
@@ -210,15 +211,20 @@ func cmdServe(cfg *config.Config, logger *slog.Logger) error {
 	}
 	httpServer, apiServer := srv.http, srv.api
 
-	// 后台任务：保留期清理 + 阅后即焚扫描，随 ctx 取消停止。
+	// 信号只触发有序关闭；匹配循环必须继续处理 Bridge 在途激活的命令。
+	workersCtx, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
+	defer apiServer.ShutdownExternal()
+
+	// 后台任务在外站连接关闭、激活交还命令之后才停止。
 	cleaner := jobs.New(pool, logger, jobs.Options{
 		MessageRetention: cfg.MessageRetention,
 		AuditRetention:   cfg.AuditRetention,
 		BottleTTL:        cfg.BottleTTL,
 		Interval:         cfg.RetentionInterval,
-	})
-	go cleaner.Start(ctx)
-	apiServer.StartBackground(ctx)
+	}, jobs.WithMediaStorage(srv.mediaStorage))
+	go cleaner.Start(workersCtx)
+	apiServer.StartBackground(workersCtx)
 
 	// 在独立 goroutine 中监听，主 goroutine 等待退出信号。
 	errCh := make(chan error, 1)
@@ -251,8 +257,9 @@ func cmdServe(cfg *config.Config, logger *slog.Logger) error {
 
 // servers 汇总构造出的 HTTP 服务与 api.Server。
 type servers struct {
-	http *http.Server
-	api  *api.Server
+	http         *http.Server
+	api          *api.Server
+	mediaStorage *media.Storage
 }
 
 // healthcheckURL 由监听地址推导出健康检查 URL（容器内固定请求 127.0.0.1）。
@@ -313,6 +320,7 @@ func newHTTPServer(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger) 
 			Handler:           apiServer.Handler(),
 			ReadHeaderTimeout: 10 * time.Second,
 		},
-		api: apiServer,
+		api:          apiServer,
+		mediaStorage: deps.MediaService.Storage(),
 	}, nil
 }

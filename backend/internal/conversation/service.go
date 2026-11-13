@@ -31,6 +31,7 @@ type Service struct {
 	limiter       RateLimiter
 	limitSettings *moderation.LimitSettings
 	filter        ContentFilter
+	media         MediaForSend
 	blocker       BlockChecker
 	now           func() time.Time
 

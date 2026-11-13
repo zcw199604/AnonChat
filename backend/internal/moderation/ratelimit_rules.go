@@ -5,6 +5,7 @@ import "time"
 type RuleKey string
 
 const (
+	RuleMediaUpload         RuleKey = "media_upload_per_minute"
 	RuleIdentityCreate      RuleKey = "identity_create"
 	RuleMsgPerSecond        RuleKey = "msg_per_second"
 	RuleMsgPerMinute        RuleKey = "msg_per_minute"
@@ -56,6 +57,7 @@ type Rule struct {
 }
 
 var ruleRegistry = []RuleMeta{
+	{RuleMediaUpload, "上传媒体", "message", "frequency", "fixed_window", "media_upload:", "identity", 10, 60, 0, 1, 15552000},
 	{RuleIdentityCreate, "创建身份", "identity", "frequency", "fixed_window", "identity_create:", "ip", 5, 86400, 86400, 1, 15552000},
 	{RuleMsgPerSecond, "每秒发送消息", "message", "frequency", "token_bucket", "msg:", "identity", 1, 1, 0, 1, 15552000},
 	{RuleMsgPerMinute, "每分钟发送消息", "message", "frequency", "fixed_window", "msg:", "identity", 10, 60, 0, 1, 15552000},

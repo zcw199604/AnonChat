@@ -10,9 +10,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/anonchat/anonchat/backend/internal/moderation"
+	"github.com/anonchat/anonchat/backend/internal/platform/httpx"
 	"github.com/anonchat/anonchat/backend/internal/realtime"
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
@@ -39,6 +41,7 @@ type sendPayload struct {
 	ClientMsgID    string `json:"clientMsgId"`
 	Kind           string `json:"kind"`
 	Body           string `json:"body"`
+	MediaID        string `json:"mediaId"`
 }
 
 // msg.read 载荷。
@@ -119,12 +122,13 @@ func (s *Service) RegisterWS(router *realtime.Router, verificationMode string) {
 
 // SendInput 是一次发送的参数。
 type SendInput struct {
-	Identity       *store.Identity
-	ConversationID pgtype.UUID
-	ClientMsgID    pgtype.UUID
-	Kind           string // text | image | video
-	Body           string
-	MediaID        pgtype.UUID // image/video 必填
+	Identity        *store.Identity
+	ConversationID  pgtype.UUID
+	ClientMsgID     pgtype.UUID
+	Kind            string // text | image | video
+	Body            string
+	MediaID         pgtype.UUID // image/video 必填
+	RequireOneToOne bool        // 用户媒体仅限 match/bottle/private；bot 与 Bridge 默认不限制。
 	// SkipRateLimit 为 true 时跳过单人限流与房间发言间隔限制。
 	// bot 跨多个会话发送，不受单人限流约束（how.md 3.1）。
 	SkipRateLimit bool
@@ -132,6 +136,16 @@ type SendInput struct {
 	// 用于给发起方回 ack；bot 通过 SendAs 发送时留空。
 	Ack func(msg store.Message)
 }
+
+// MediaForSend 查找发送者有权发送的用户上传媒体。
+type MediaForSend interface {
+	GetUserMediaForSend(context.Context, pgtype.UUID, pgtype.UUID) (store.MediaItem, error)
+}
+
+func WithMedia(m MediaForSend) Option { return func(s *Service) { s.media = m } }
+
+// SetMedia 在注册请求处理之前装配媒体服务。
+func (s *Service) SetMedia(m MediaForSend) { s.media = m }
 
 // SendError 是发送管道返回的业务错误，Code 与现有错误码一致。
 type SendError struct {
@@ -190,6 +204,9 @@ func (s *Service) SendAs(ctx context.Context, in SendInput) (store.Message, bool
 	}
 	if conv.EndedAt.Valid {
 		return store.Message{}, false, sendErr("conversation_ended", "会话已结束")
+	}
+	if in.RequireOneToOne && conv.Kind != store.ConversationKindMatch && conv.Kind != store.ConversationKindBottle && conv.Kind != store.ConversationKindPrivate {
+		return store.Message{}, false, sendErr("invalid_request", "该会话不支持发送媒体")
 	}
 
 	// 幂等重发先返回原 ack，不消耗额度，也不再次广播。
@@ -255,6 +272,10 @@ func (s *Service) SendAs(ctx context.Context, in SendInput) (store.Message, bool
 	})
 	inserted := true
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "messages_media_id_fkey" {
+			return store.Message{}, false, sendErr("invalid_request", "媒体已失效，请重新上传")
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			// 冲突：查出原消息，回相同 ack，不再广播。
 			inserted = false
@@ -321,7 +342,6 @@ func (s *Service) SendAs(ctx context.Context, in SendInput) (store.Message, bool
 }
 
 // HandleSend 处理 msg.send：校验 → SendAs（成员/会话状态 → 限流 → 内容过滤 → 落库 → ack → 广播）。
-// 用户通过 WS 仍然只能发文本消息（V1 的限制保留在这里）。
 func (s *Service) HandleSend(ctx context.Context, cl Client, env realtime.Envelope) {
 	var p sendPayload
 	if err := json.Unmarshal(env.Data, &p); err != nil {
@@ -338,22 +358,53 @@ func (s *Service) HandleSend(ctx context.Context, cl Client, env realtime.Envelo
 		cl.Error(env.ID, "invalid_request", "clientMsgId 非法")
 		return
 	}
-	if p.Kind != "text" {
-		cl.Error(env.ID, "invalid_request", "V1 只支持文本消息")
-		return
-	}
 	body := strings.TrimSpace(p.Body)
-	if body == "" || utf8.RuneCountInString(body) > maxBodyRunes {
-		cl.Error(env.ID, "invalid_request", "消息内容为空或超过上限")
+	var mediaID pgtype.UUID
+	requireOneToOne := false
+	switch p.Kind {
+	case "text":
+		if body == "" || utf8.RuneCountInString(body) > maxBodyRunes {
+			cl.Error(env.ID, "invalid_request", "消息内容为空或超过上限")
+			return
+		}
+	case "image", "video":
+		requireOneToOne = true
+		mediaID, err = parseUUID(p.MediaID)
+		if err != nil || s.media == nil {
+			cl.Error(env.ID, "invalid_request", "媒体不存在或不属于你")
+			return
+		}
+		item, lookupErr := s.media.GetUserMediaForSend(ctx, mediaID, cl.Identity().ID)
+		if lookupErr != nil {
+			var apiErr *httpx.APIError
+			if errors.Is(lookupErr, pgx.ErrNoRows) || (errors.As(lookupErr, &apiErr) && apiErr.Code == httpx.CodeNotFound) {
+				cl.Error(env.ID, "invalid_request", "媒体不存在或不属于你")
+			} else {
+				s.internalError(cl, env.ID, lookupErr)
+			}
+			return
+		}
+		if item.Kind != p.Kind {
+			cl.Error(env.ID, "invalid_request", "媒体不存在或不属于你")
+			return
+		}
+		if utf8.RuneCountInString(body) > maxBodyRunes {
+			cl.Error(env.ID, "invalid_request", "消息内容超过上限")
+			return
+		}
+	default:
+		cl.Error(env.ID, "invalid_request", "不支持的消息类型")
 		return
 	}
 
 	_, _, err = s.SendAs(ctx, SendInput{
-		Identity:       cl.Identity(),
-		ConversationID: convID,
-		ClientMsgID:    clientMsgID,
-		Kind:           "text",
-		Body:           body,
+		Identity:        cl.Identity(),
+		ConversationID:  convID,
+		ClientMsgID:     clientMsgID,
+		Kind:            p.Kind,
+		Body:            body,
+		MediaID:         mediaID,
+		RequireOneToOne: requireOneToOne,
 		Ack: func(msg store.Message) {
 			cl.Ack(env.ID, AckPayload{MessageID: msg.ID, CreatedAt: formatTS(msg.CreatedAt)})
 		},

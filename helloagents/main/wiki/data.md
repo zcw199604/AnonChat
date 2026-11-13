@@ -1,7 +1,7 @@
 # 数据模型与保留期
 
 > 以代码为准。表结构见 `backend/migrations/*.sql` 与 `backend/internal/store/models.go`。
-> 最后同步：Bot 人设包、双核驱动与长期记忆（202611092002）。
+> 最后同步：外站匹配接入与用户媒体（202611131925）。来源：[实施方案](../plan/202611131925_external-match-bridge/how.md)。
 
 ## 表结构
 
@@ -14,7 +14,7 @@
 ### 会话与消息
 - `conversations`：`id uuid pk`、`kind conversation_kind(match|room|bottle|private|story)`、`burn_after_read`、`ended_at`、`end_reason`、`created_at`。
 - `conversation_members`：PK `(conversation_id, member_id)`、`identity_id`、`role`、`last_read_message_id`、`muted_until`(V2)、`joined_at`、`left_at`；唯一 `(conversation_id, identity_id)`。
-- `messages`：`id bigserial pk`、`conversation_id`、`sender_identity_id`、`sender_member_id`、`client_msg_id uuid`、`kind(text|system|image V2)`、`body`、`media_id`(V2)、`read_at`、`burned_at`、`created_at`；唯一 `(sender_identity_id, client_msg_id)`。
+- `messages`：`id bigserial pk`、`conversation_id`、`sender_identity_id`、`sender_member_id`、`client_msg_id uuid`、`kind(text|system|image|video)`、`body`、`media_id`、`read_at`、`burned_at`、`created_at`；唯一 `(sender_identity_id, client_msg_id)`。用户媒体仅允许 `match/bottle/private`，外站入站也经 `SendAs` 落库。
 
 ### 四种形态
 - `rooms`：`id`、`conversation_id unique`、`slug unique`、`name`、`description`、`emoji`(默认 💬，迁移 00004)、`kind`、`visibility`、`max_members`、`sort_order`、`last_message_at`、`archived_at` 等。
@@ -25,6 +25,7 @@
 ### 治理
 - `blocks`：PK `(blocker_identity_id, blocked_identity_id)`。
 - `reports`：`id`、`reporter_identity_id`、`reported_identity_id`、`conversation_id`(无外键)、`reason(spam|harassment|porn|illegal|other)`、`note`、`snapshot jsonb`、`status`、`handled_by`、`handled_at`、`target_type(message|bottle|broadcast|work)`、`target_id text`。
+  消息快照保留既有 `id/memberId/nickname/body/createdAt/burnedAt/reported`，新增可选 `kind/mediaId`；仅保存媒体引用，不复制图片/视频字节，旧快照无需回填。
 - `bans`：`subject_type(identity|ip|account)`、`subject_value`、`reason`、`expires_at`(NULL 永久)、`created_by`、`revoked_at`。
 - `access_logs`：`identity_id`、`event`、`ip`、`user_agent`、`created_at`（合规留存）。
 
@@ -52,10 +53,19 @@
 - `bot_settings`：单行表（`id smallint pk CHECK (id=1)`）——`enabled`(全局开关)、`llm_base_url`、`llm_api_key_enc bytea`(AES-256-GCM(nonce||ciphertext)，NULL 表示未设置)、`llm_api_key_hint`(只存末 4 位)、`llm_api_key_base_url`(key 绑定保存时的 Base URL，地址变了该 key 不再使用)、`llm_model`、`llm_timeout_seconds`(5–300)、`llm_send_cache_key`、`match_fallback_seconds`(3–600)、`bottle_min_age_seconds`(0–604800)、`timezone`、`updated_by → admin_users`(SET NULL)、`updated_at`。
   首次初始化：服务启动时若表为空，用环境变量写入一次；之后以数据库为准（后台可热切换，无需重启）。
 
-### 媒体库（迁移 00005）
+### 媒体（迁移 00005、00010）
 - `media_folders`：`id`、`name unique`(1–40)、`created_at`。
-- `media_items`：`id`、`folder_id → media_folders`(CASCADE)、`kind(image|video)`、`mime`、`size_bytes`、`storage_key unique`（相对 `MEDIA_ROOT` 的路径 `<folder_id>/<item_id><ext>`）、`original_name`、`tags text[]`(≤20 个，每个 ≤20 字)、`caption`(≤200，只给模型看)、`created_at`。
-- `messages.media_id`（V1 预留列）在迁移 00005 加上外键 `→ media_items(id) ON DELETE SET NULL`，因此删除媒体时历史消息的 `media_id` 会被置空（前端显示「媒体已失效」）。
+- `media_items`：`id`、可空 `folder_id → media_folders`(CASCADE)、`kind(image|video)`、`mime`、`size_bytes`、`storage_key unique`、`original_name`、`tags text[]`(≤20 个，每个 ≤20 字)、`caption`(≤200，只给模型看)、`created_at`；00010 新增 `source(library|user|external)`（默认 library）与可空 `owner_identity_id → identities`（SET NULL）。CHECK 约束要求 `source=library` 当且仅当 folder_id 非空。
+- 存储键相对 `MEDIA_ROOT`：媒体库保持 `<folder_id>/<item_id><ext>`；用户和外站媒体为 `user/YYYYMM/<item_id><ext>`、`external/YYYYMM/<item_id><ext>`（UTC 月份）。保存统一先写临时文件、嗅探 MIME、校验白名单后提交；用户大小上限由 `USER_MEDIA_MAX_UPLOAD_MB` 单独控制。
+- 用户上传的 owner 为上传身份，library/external 来源的 owner 为空；外站媒体访问依靠消息引用和会话成员关系。用户发媒体必须匹配 source=user、owner 与 kind；尚未被任何消息引用的媒体允许 owner 预览，已发送媒体按成员/未焚毁消息规则访问。
+- `messages.media_id` 在迁移 00005 加上外键 `→ media_items(id) ON DELETE SET NULL`；后台删除媒体仍会使历史引用置空（前端显示「媒体已失效」）。孤儿自动清理另用下述加锁协议防止并发发送产生空引用。
+
+### 外站（迁移 00010）
+
+- `external_settings`：单行表（id=1），`enabled/chat2019_enabled/wanfeng_enabled` 默认 false；`online_threshold` 默认5（0–100000）、`local_wait_seconds` 默认10（0–600）、`external_match_seconds` 默认10（3–120）、`chat2019_max_sessions/wanfeng_max_sessions` 默认20（1–1000）；`updated_by → admin_users`（SET NULL）、`updated_at`。启动时确保默认行存在，后台更新后立即刷新内存与通知 Bridge。
+- `external_bindings`：主键 `(identity_id,provider)`，identity 外键 CASCADE；`provider(chat2019|wanfeng)`、`remote_uid`、`identity_token_enc`、`device_id`、`nickname`、`created_at/updated_at`。晚风 token 用 `SETTINGS_ENC_KEY` 进行 secretbox 加密（无密钥时晚风不可用），chat2019 token 列为 NULL；外站账号与随机昵称跨轮复用。
+- `external_peers`：主键 `(provider,remote_uid)`；`identity_id unique → identities`、`nickname`、`first_seen_at/last_seen_at`。同一外站对象复用同一影子身份，保障屏蔽语义。
+- `external_conversations`：`conversation_id` 主键且引用 conversations（CASCADE）；`provider`、`user_identity_id/peer_identity_id → identities`、`remote_peer_uid`、`created_at`。与建 match 会话同一事务插入；实时 link 映射在内存中。
 
 ### 管理后台
 - `admin_users`：`id`、`username unique`、`password_hash`(bcrypt cost12)、`totp_secret_enc`(V2)。
@@ -78,6 +88,8 @@
 - `story_works_status_created_idx ON story_works(status, created_at DESC)`
 - `media_items_folder_idx ON media_items(folder_id, created_at DESC)`
 - `messages_media_id_idx ON messages(media_id) WHERE media_id IS NOT NULL`
+- `media_items_nonlibrary_created_idx ON media_items(created_at) WHERE source <> 'library'`
+- `external_conversations_user_idx ON external_conversations(user_identity_id, created_at DESC)`
 - `bot_usage_bot_created_idx ON bot_usage(bot_id, created_at)`、`bot_usage_conv_idx ON bot_usage(conversation_id, created_at) WHERE conversation_id IS NOT NULL`
 
 ## 保留期（`jobs`，均可配置）
@@ -99,9 +111,14 @@
 | activation_codes | 已兑换的保留（财务凭证，不删除） | — |
 | story_works / story_work_likes | 不受 7 天留存约束（双方同意后生成的公开内容） | — |
 | bot_usage | 30 天 | 固定 |
-| character_cards / bots / media_folders / media_items / bot_settings | 不自动删除（运营数据，由后台手动删除/覆盖） | — |
+| character_cards / bots / media_folders / source=library 的 media_items / bot_settings | 不自动删除（运营数据，由后台手动删除/覆盖） | — |
+| source=user/external 的 media_items | 创建超过24小时且无未焚毁消息引用时清理行与文件 | 固定；每轮最多20批，每批500行 |
+| external_settings / external_peers | 不自动删除；保留设置与影子身份映射 | — |
+| external_bindings / external_conversations | 分别随身份 / 会话删除级联清理 | 外键 CASCADE |
 
 清理任务每 `RETENTION_INTERVAL`（默认 10m）执行，messages/reports 按每批 5000 行循环。
+
+`orphan_media` 在消息保留期清理之前执行，以 `(created_at,id)` 游标扫描，避免500条仍被引用的旧媒体挡住后续孤儿。每批使用 READ COMMITTED 事务：第一语句 `SELECT … FOR UPDATE SKIP LOCKED` 锁候选；第二语句 DELETE 重新检查不存在未焚毁引用，提交后删除文件。消息插入的外键键锁与清理互斥：发送先锁则清理跳过；清理先锁则插入可能返回「媒体已失效，请重新上传」，不会留下 media_id 被置空的新消息。刚被保留期删除消息释放的媒体由下一轮回收。
 
 ## 迁移列表（`backend/migrations/`）
 
@@ -111,6 +128,10 @@
 4. `00004_profile_vip_story.sql`：身份资料与权益字段、`public_code` 回填与唯一索引、房间 `emoji`、`conversation_kind` 新增 `story`、公告、广播、激活码批次与激活码、故事与作品、举报 `target_type/target_id`。Down 迁移可完整回滚（含重建 `conversation_kind` 枚举）。
 5. `00005_bots.sql`：`character_cards`、`media_folders`、`media_items`、`bots`、`bot_usage`，以及 `messages.media_id` 外键与部分索引。Down 按相反顺序删除（先 `bot_usage`、`bots`，再删外键/索引，最后 `media_items`、`media_folders`、`character_cards`）。
 6. `00006_bot_settings.sql`：`bot_settings` 单行表（全局开关与模型接入配置，后台可热切换）。
+7. `00007_bot_persona_mode.sql`：历史 persona_mode 及 bot 输出上限默认值，当前运行时约定见下。
+8. `00008_rate_limit_rules.sql`：可配置限流规则，见下。
+9. `00009_bot_persona_memory.sql`：人设、表情与长期记忆，见下。
+10. `00010_external_bridge.sql`：四张外站表、媒体 source/owner、folder 可空约束及索引。单步回滚到00009删除非媒体库媒体行，磁盘 `MEDIA_ROOT/user` 与 `MEDIA_ROOT/external` 需人工清理；回滚前关闭总开关并备份数据库和媒体卷。
 
 - `bot_settings.persona_mode`（迁移 00007）：数据库保留 `user` / `system` 以兼容旧数据，运行时和保存时统一使用 `user`，后台不再提供切换选项。角色设定及额外系统指令每轮放进第一条 user 消息；旧 `system` 值无需手动迁移。`BuildMessages` 仍支持显式 `system`，仅供独立诊断脚本对比。`bots.max_output_tokens` 默认值为 1024（思考型模型需要更大的输出额度）。
 

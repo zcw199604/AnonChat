@@ -196,6 +196,34 @@ func (q *Queries) GetMessageByIdentityClientID(ctx context.Context, arg GetMessa
 	return i, err
 }
 
+const getMessageForRelay = `-- name: GetMessageForRelay :one
+SELECT id, conversation_id, sender_identity_id, kind, body, media_id
+FROM messages WHERE id = $1
+`
+
+type GetMessageForRelayRow struct {
+	ID               int64       `json:"id"`
+	ConversationID   pgtype.UUID `json:"conversation_id"`
+	SenderIdentityID pgtype.UUID `json:"sender_identity_id"`
+	Kind             string      `json:"kind"`
+	Body             string      `json:"body"`
+	MediaID          pgtype.UUID `json:"media_id"`
+}
+
+func (q *Queries) GetMessageForRelay(ctx context.Context, id int64) (GetMessageForRelayRow, error) {
+	row := q.db.QueryRow(ctx, getMessageForRelay, id)
+	var i GetMessageForRelayRow
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.SenderIdentityID,
+		&i.Kind,
+		&i.Body,
+		&i.MediaID,
+	)
+	return i, err
+}
+
 const insertBlock = `-- name: InsertBlock :exec
 INSERT INTO blocks (blocker_identity_id, blocked_identity_id)
 VALUES ($1, $2)

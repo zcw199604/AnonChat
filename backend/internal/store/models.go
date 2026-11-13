@@ -319,6 +319,49 @@ type ConversationMember struct {
 	LeftAt            pgtype.Timestamptz `json:"left_at"`
 }
 
+type ExternalBinding struct {
+	IdentityID       pgtype.UUID        `json:"identity_id"`
+	Provider         string             `json:"provider"`
+	RemoteUid        string             `json:"remote_uid"`
+	IdentityTokenEnc []byte             `json:"identity_token_enc"`
+	DeviceID         string             `json:"device_id"`
+	Nickname         string             `json:"nickname"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ExternalConversation struct {
+	ConversationID pgtype.UUID        `json:"conversation_id"`
+	Provider       string             `json:"provider"`
+	UserIdentityID pgtype.UUID        `json:"user_identity_id"`
+	PeerIdentityID pgtype.UUID        `json:"peer_identity_id"`
+	RemotePeerUid  string             `json:"remote_peer_uid"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type ExternalPeer struct {
+	Provider    string             `json:"provider"`
+	RemoteUid   string             `json:"remote_uid"`
+	IdentityID  pgtype.UUID        `json:"identity_id"`
+	Nickname    string             `json:"nickname"`
+	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
+}
+
+type ExternalSetting struct {
+	ID                   int16              `json:"id"`
+	Enabled              bool               `json:"enabled"`
+	Chat2019Enabled      bool               `json:"chat2019_enabled"`
+	WanfengEnabled       bool               `json:"wanfeng_enabled"`
+	OnlineThreshold      int32              `json:"online_threshold"`
+	LocalWaitSeconds     int32              `json:"local_wait_seconds"`
+	ExternalMatchSeconds int32              `json:"external_match_seconds"`
+	Chat2019MaxSessions  int32              `json:"chat2019_max_sessions"`
+	WanfengMaxSessions   int32              `json:"wanfeng_max_sessions"`
+	UpdatedBy            pgtype.UUID        `json:"updated_by"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Identity struct {
 	ID                pgtype.UUID        `json:"id"`
 	TokenHash         []byte             `json:"token_hash"`
@@ -349,16 +392,18 @@ type MediaFolder struct {
 }
 
 type MediaItem struct {
-	ID           pgtype.UUID        `json:"id"`
-	FolderID     pgtype.UUID        `json:"folder_id"`
-	Kind         string             `json:"kind"`
-	Mime         string             `json:"mime"`
-	SizeBytes    int64              `json:"size_bytes"`
-	StorageKey   string             `json:"storage_key"`
-	OriginalName string             `json:"original_name"`
-	Tags         []string           `json:"tags"`
-	Caption      string             `json:"caption"`
-	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ID              pgtype.UUID        `json:"id"`
+	FolderID        pgtype.UUID        `json:"folder_id"`
+	Kind            string             `json:"kind"`
+	Mime            string             `json:"mime"`
+	SizeBytes       int64              `json:"size_bytes"`
+	StorageKey      string             `json:"storage_key"`
+	OriginalName    string             `json:"original_name"`
+	Tags            []string           `json:"tags"`
+	Caption         string             `json:"caption"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	Source          string             `json:"source"`
+	OwnerIdentityID pgtype.UUID        `json:"owner_identity_id"`
 }
 
 type Message struct {

@@ -25,6 +25,8 @@ interface SnapshotItem {
   memberId: number
   nickname: string
   body: string
+  kind?: string
+  mediaId?: string | null
   createdAt?: string
   burnedAt?: string
   reported?: boolean
@@ -182,6 +184,8 @@ export function ReportDetailPage() {
                     }`}
                   >
                     <span className="mr-2 text-xs text-lobby-sub">{s.nickname}</span>
+                    {s.kind === 'image' && s.mediaId && <img src={`/api/admin/media-items/${encodeURIComponent(s.mediaId)}/file`} alt="举报图片" className="my-2 max-h-80 max-w-full rounded-sm" loading="lazy" />}
+                    {s.kind === 'video' && s.mediaId && <video src={`/api/admin/media-items/${encodeURIComponent(s.mediaId)}/file`} aria-label="举报视频" className="my-2 max-h-80 max-w-full rounded-sm" controls preload="metadata" />}
                     {s.body}
                   </div>
                 ))}

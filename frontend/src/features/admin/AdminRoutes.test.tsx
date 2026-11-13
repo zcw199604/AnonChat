@@ -170,6 +170,12 @@ vi.mock('./botApi', () => {
 
 import AdminPage from './AdminPage'
 
+vi.mock('./externalApi', () => ({
+ adminExternalSettings: () => Promise.resolve({enabled:false,chat2019Enabled:false,wanfengEnabled:false,onlineThreshold:5,localWaitSeconds:3,externalMatchSeconds:10,chat2019MaxSessions:10,wanfengMaxSessions:10}),
+ adminExternalStatus: () => Promise.resolve({providers:[],online:0,queue:0}),
+ adminSaveExternalSettings: vi.fn(),
+}))
+
 const PATHS = [
   '/admin',
   '/admin/reports',
@@ -182,6 +188,7 @@ const PATHS = [
   '/admin/broadcasts',
   '/admin/works',
   '/admin/bot',
+  '/admin/external',
   '/admin/audit',
 ]
 

@@ -28,6 +28,7 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/bottle"
 	"github.com/anonchat/anonchat/backend/internal/config"
 	"github.com/anonchat/anonchat/backend/internal/conversation"
+	"github.com/anonchat/anonchat/backend/internal/external"
 	"github.com/anonchat/anonchat/backend/internal/feed"
 	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/match"
@@ -85,7 +86,9 @@ type Config struct {
 	Clock func() time.Time
 
 	// MediaRoot 是媒体文件根目录，默认 t.TempDir()。
-	MediaRoot string
+	MediaRoot            string
+	UserMediaMaxUploadMB int
+	MediaUploadLimiter   moderation.RateLimiter
 
 	// BotLLM 非 nil 时启用 bot 引擎（相当于 BOT_ENABLED=true）。
 	BotLLM bot.LLM
@@ -157,7 +160,7 @@ func runMigrations(t *testing.T, url string) {
 // Truncate 清空身份/验证相关表，确保测试之间互不影响。
 func Truncate(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	const q = `TRUNCATE bot_memory_cursors, bot_peer_events, bot_peer_memories, card_expressions, identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes, character_cards, media_folders, media_items, bots, bot_usage, bot_settings RESTART IDENTITY CASCADE`
+	const q = `TRUNCATE external_settings, external_bindings, external_peers, external_conversations, bot_memory_cursors, bot_peer_events, bot_peer_memories, card_expressions, identities, verified_accounts, sms_codes, access_logs, conversations, conversation_members, messages, blocks, bottles, bottle_picks, private_links, reports, bans, rooms, admin_sessions, admin_audit_logs, announcements, broadcasts, activation_batches, activation_codes, stories, story_works, story_work_likes, character_cards, media_folders, media_items, bots, bot_usage, bot_settings RESTART IDENTITY CASCADE`
 	if _, err := pool.Exec(context.Background(), q); err != nil {
 		t.Fatalf("清空表失败: %v", err)
 	}
@@ -207,6 +210,7 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 		assign(&c.NicknameShuffle, moderation.RuleNicknameShuffle)
 		assign(&c.NicknameSet, moderation.RuleNicknameSet)
 		assign(&c.BotSettingsTestLimiter, moderation.RuleBotSettingsTest)
+		assign(&c.MediaUploadLimiter, moderation.RuleMediaUpload)
 	}
 
 	cfg := buildConfig(c)
@@ -296,7 +300,6 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 	gateway.AddConnObserver(roomSvc)
 
 	mctx, mcancel := context.WithCancel(context.Background())
-	go matchSvc.Run(mctx)
 	t.Cleanup(mcancel)
 
 	reportLimiter := c.ReportLimiter
@@ -355,8 +358,9 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 	if err != nil {
 		t.Fatalf("构造媒体存储失败: %v", err)
 	}
-	mediaSvc := media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB)
-	mediaHandler := media.NewHandler(mediaSvc, adminSvc)
+	mediaSvc := media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB, media.WithUserMaxUploadMB(cfg.UserMediaMaxUploadMB))
+	convSvc.SetMedia(mediaSvc)
+	mediaHandler := media.NewHandler(mediaSvc, adminSvc, media.WithUploadLimiter(c.MediaUploadLimiter))
 
 	// AI 机器人：引擎始终创建并运行（how.md §15.2）；BotLLM 非 nil 时注入假模型并默认启用设置。
 	// 生效配置写在 bot_settings 里：开关/模型/兜底时间/瓶龄/时区都从数据库读，
@@ -399,11 +403,28 @@ func MustEnv(t *testing.T, pool *pgxpool.Pool, c Config) *Env {
 		limiterOr(c.BotSettingsTestLimiter), logger)
 	go botEngine.Run(mctx)
 
-	deps := api.Deps{Cfg: cfg, Pool: pool, Logger: logger, Identity: idHandler, Verify: verHandler,
+	externalSettings, err := external.NewSettingsCache(context.Background(), pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalBridge, err := external.NewConfiguredBridge(external.BridgeDeps{
+		Pool: pool, Settings: externalSettings, Match: matchSvc, Conv: convSvc,
+		Media: mediaSvc, Hub: gateway.Hub(), Logger: logger,
+	}, cfg)
+	if err != nil {
+		t.Fatalf("装配外站连接失败: %v", err)
+	}
+	matchSvc.SetExternalMatcher(externalBridge, gateway.Hub().OnlineCount)
+	convSvc.AddObserver(externalBridge)
+	externalSettings.OnChange(externalBridge.ApplySettings)
+	go matchSvc.Run(mctx)
+	// Cleanup 按逆序执行：先关 HTTP，再等 Bridge 在途激活结束，最后取消匹配循环。
+	t.Cleanup(externalBridge.Close)
+	deps := api.Deps{ExternalBridge: externalBridge, ExternalSettings: externalSettings, ExternalAdmin: external.NewSettingsHandler(externalSettings, adminSvc), Cfg: cfg, Pool: pool, Logger: logger, Identity: idHandler, Verify: verHandler,
 		Realtime: gateway, Conversation: convSvc, Report: reportSvc, Ban: banSvc, Resolver: resolver,
 		Match: matchSvc, Room: roomSvc, Bottle: bottleSvc, Private: privateSvc, Admin: adminSvc,
 		Profile: profileHandler, VIP: vipHandler, Feed: feedHandler, Story: storyHandler, StoryService: storySvc,
-		Media: mediaHandler, BotAdmin: botHandler, BotEngine: botEngine}
+		Media: mediaHandler, MediaService: mediaSvc, BotAdmin: botHandler, BotEngine: botEngine}
 	srv := httptest.NewServer(api.NewServer(deps).Handler())
 	t.Cleanup(srv.Close)
 	return &Env{Server: srv, Deps: deps}
@@ -436,12 +457,13 @@ func buildConfig(c Config) *config.Config {
 		AdminIPAllowlist: c.AdminIPAllowlist,
 		StoryMinDuration: storyMin,
 		// 媒体库：根目录由 MustEnv 注入（默认 t.TempDir()）。
-		MediaRoot:        c.MediaRoot,
-		MediaMaxUploadMB: 100,
-		BotTimezone:      "Asia/Shanghai",
-		LLMTimeout:       10 * time.Second,
-		BotBottleMinAge:  bottleMinAgeOrZero(c.BottleMinAge),
-		SettingsEncKey:   settingsEncKey(c.NoSettingsEncKey),
+		MediaRoot:            c.MediaRoot,
+		MediaMaxUploadMB:     100,
+		UserMediaMaxUploadMB: c.UserMediaMaxUploadMB,
+		BotTimezone:          "Asia/Shanghai",
+		LLMTimeout:           10 * time.Second,
+		BotBottleMinAge:      bottleMinAgeOrZero(c.BottleMinAge),
+		SettingsEncKey:       settingsEncKey(c.NoSettingsEncKey),
 	}
 }
 

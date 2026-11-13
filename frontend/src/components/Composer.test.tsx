@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
 
 describe('Composer', () => {
@@ -53,4 +53,29 @@ describe('Composer', () => {
     fireEvent.change(ta, { target: { value: 'abc' } })
     expect(onTyping).toHaveBeenCalledTimes(2)
   })
+})
+
+it('只在传入媒体回调时显示附件，禁用状态禁止选择', () => {
+  const view = render(<Composer onSend={vi.fn()} />)
+  expect(screen.queryByRole('button', { name: '发送图片或视频' })).not.toBeInTheDocument()
+  view.rerender(<Composer onSend={vi.fn()} onSendMedia={vi.fn()} disabled />)
+  expect(screen.getByRole('button', { name: '发送图片或视频' })).toBeDisabled()
+  expect(screen.getByLabelText('选择图片或视频')).toHaveAttribute('accept', 'image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm')
+})
+
+it('上传中禁用附件；失败显示提示并恢复，可重选同一文件', async () => {
+  let reject!: (reason: Error) => void
+  const upload = vi.fn().mockReturnValueOnce(new Promise<void>((_, fail) => { reject = fail })).mockResolvedValue(undefined)
+  render(<Composer onSend={vi.fn()} onSendMedia={upload} />)
+  const file = new File(['png'], 'image.png', { type: 'image/png' })
+  const input = screen.getByLabelText('选择图片或视频')
+  fireEvent.change(input, { target: { files: [file] } })
+  expect(upload).toHaveBeenCalledWith(file)
+  expect(screen.getByRole('button', { name: '发送图片或视频' })).toBeDisabled()
+  await act(async () => { reject(new Error('文件超过大小上限')) })
+  expect(screen.getByRole('alert')).toHaveTextContent('文件超过大小上限')
+  expect(screen.getByRole('button', { name: '发送图片或视频' })).toBeEnabled()
+  fireEvent.change(input, { target: { files: [file] } })
+  await waitFor(() => expect(upload).toHaveBeenCalledTimes(2))
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })

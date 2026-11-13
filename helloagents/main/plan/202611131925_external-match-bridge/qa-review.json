@@ -1,0 +1,61 @@
+{
+  "schema_version": 3,
+  "qa_mode": "deep",
+  "scope": "外站匹配、用户媒体、探测工具方案的 P8.1 安全审查、P9.1 文档同步与 P10.1 最终验证；P11 人工任务不执行",
+  "outcome": "findings",
+  "gate_status": "passed",
+  "conclusion": "P8 的日志泄露与外站 Bridge 覆盖缺口已修复并补回归；P9 文档按代码事实同步；P10 全部指定命令一次通过。未连接真实外站、未提交。",
+  "findings": [
+    {
+      "severity": "P1",
+      "status": "resolved",
+      "title": "外站移植客户端原始帧、URL 与错误可能进入日志",
+      "evidence": "TestExternalLogsNeverEchoUpstreamData 的 RED 输出包含 token/Cookie/正文/URL/error；external/logging.go 白名单 handler 在 NewBridge 与 NewConfiguredBridge 装配，GREEN race 测试通过。"
+    },
+    {
+      "severity": "P2",
+      "status": "resolved",
+      "title": "Bridge 场景缺少不可用站点、真实 idle 复用等独立回归",
+      "evidence": "新增 p8_bridge_test.go 六组测试；p8-external-coverage.md 逐项映射 how.md 测试部署场景；定向 race、vet、staticcheck 通过。"
+    }
+  ],
+  "file_references": [
+    "backend/internal/external/logging.go",
+    "backend/internal/external/logging_test.go",
+    "backend/internal/external/p8_bridge_test.go",
+    "helloagents/main/plan/202611131925_external-match-bridge/p8-review.md",
+    "helloagents/main/plan/202611131925_external-match-bridge/p8-external-coverage.md",
+    "helloagents/main/wiki/glossary.md",
+    "helloagents/main/wiki/protocol.md",
+    "helloagents/main/wiki/data.md",
+    "helloagents/main/wiki/deploy.md",
+    "helloagents/main/project.md",
+    "deploy/README.md",
+    "deploy/.env.example"
+  ],
+  "commands": [
+    {"command":"make sqlc","result":"passed","note":"sqlc 生成通过。"},
+    {"command":"make test","result":"passed","note":"后端单元测试全部通过。"},
+    {"command":"cd backend && TEST_DATABASE_URL='postgres://anonchat:anonchat@127.0.0.1:55432/anonchat_test?sslmode=disable' go test -tags integration -p 1 -count=1 ./...","result":"passed","note":"本机 anonchat_test 集成测试全部通过，串行且无缓存。"},
+    {"command":"make lint","result":"passed","note":"go vet、staticcheck、前端 ESLint 全部通过。"},
+    {"command":"make web-test","result":"passed","note":"44 个前端测试文件、217 个测试通过，typecheck 与 lint 通过。"},
+    {"command":"cd frontend && pnpm build","result":"passed","note":"tsc -b 与 Vite 生产构建通过。"},
+    {"command":"cd backend && go test ./internal/external/... -race -count=1","result":"passed","note":"external、chat2019、wanfeng race 测试通过。"},
+    {"command":"cd backend && go test ./cmd/probe-external/... -race -count=1","result":"passed","note":"探测工具全部本地 httptest race 测试通过。"},
+    {"command":"git diff --check","result":"passed","note":"无空白错误；文档相对链接检查通过。"}
+  ],
+  "task_verification": [
+    {"task":"P8.1","status":"passed","evidence":"p8-review.md 与 p8-external-coverage.md 逐条核对；日志修复与六组 Bridge 回归测试通过。"},
+    {"task":"P9.1","status":"passed","evidence":"七份指定文档更新，方案链接及代码事实核对通过。"},
+    {"task":"P10.1","status":"passed","evidence":"六条指定门禁命令组成的整组链式执行一次通过，qa-review.json gate_status=passed。"}
+  ],
+  "tdd": {
+    "classification":"mandatory",
+    "decision":"tdd",
+    "target_behaviors":["外站日志不泄露敏感数据","Bridge 缺失场景回归覆盖","文档与代码契约同步"],
+    "red":{"command":"cd backend && go test ./internal/external -run TestExternalLogs -count=1；新增 Bridge 场景测试前的覆盖审计","result":"failed","summary":"日志测试 RED 输出 token/Cookie/正文/URL/error；覆盖审计确认不可用站点、真实 idle 复用、IP 冷却、容量下调、单站关闭、旧 Start 缺少独立测试。"},
+    "green":{"command":"cd backend && go test ./internal/external -run TestExternalLogs -race -count=1；定向 Bridge race","result":"passed","summary":"日志白名单 handler 与六组 Bridge 覆盖测试通过。"},
+    "refactor":{"performed":false,"command":"make lint","result":"passed","summary":"未进行额外重构；仅在 external 装配边界增加日志过滤。"},
+    "verify":{"command":"make sqlc && make test && (cd backend && TEST_DATABASE_URL='postgres://anonchat:anonchat@127.0.0.1:55432/anonchat_test?sslmode=disable' go test -tags integration -p 1 -count=1 ./...) && make lint && make web-test && (cd frontend && pnpm build)","result":"passed","summary":"全套最终门禁一次通过。"}
+  }
+}

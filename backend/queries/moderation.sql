@@ -34,7 +34,7 @@ FROM messages
 WHERE id = $1 AND conversation_id = $2;
 
 -- name: ListReportContextBefore :many
-SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at
+SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at, m.kind, m.media_id
 FROM messages m
 JOIN identities i ON i.id = m.sender_identity_id
 WHERE m.conversation_id = $1 AND m.id <= $2
@@ -42,7 +42,7 @@ ORDER BY m.id DESC
 LIMIT 11;
 
 -- name: ListReportContextAfter :many
-SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at
+SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at, m.kind, m.media_id
 FROM messages m
 JOIN identities i ON i.id = m.sender_identity_id
 WHERE m.conversation_id = $1 AND m.id > $2

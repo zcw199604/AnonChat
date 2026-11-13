@@ -16,6 +16,7 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/bottle"
 	"github.com/anonchat/anonchat/backend/internal/config"
 	"github.com/anonchat/anonchat/backend/internal/conversation"
+	"github.com/anonchat/anonchat/backend/internal/external"
 	"github.com/anonchat/anonchat/backend/internal/feed"
 	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/anonchat/anonchat/backend/internal/match"
@@ -54,9 +55,13 @@ type Deps struct {
 	Story        *story.Handler
 	StoryService *story.Service
 	Media        *media.Handler
+	MediaService *media.Service
 	BotAdmin     *bot.Handler
 	// BotEngine 为 nil 表示未启用 bot 引擎（BOT_ENABLED=false）。
-	BotEngine *bot.Engine
+	BotEngine        *bot.Engine
+	ExternalSettings *external.SettingsCache
+	ExternalAdmin    *external.SettingsHandler
+	ExternalBridge   *external.Bridge
 }
 
 // Server 持有装配好的依赖。
@@ -140,14 +145,32 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 		admin.WithLoginLimiters(settings.Limiter(moderation.RuleAdminLogin), settings.Limiter(moderation.RuleAdminLogin)),
 		admin.WithOnlineLister(hub), admin.WithLimitSettings(settings))
 	adminSvc.SetResolver(resolver)
+	externalSettings, err := external.NewSettingsCache(loadCtx, pool)
+	if err != nil {
+		return Deps{}, fmt.Errorf("加载外站设置: %w", err)
+	}
+	externalHandler := external.NewSettingsHandler(externalSettings, adminSvc)
 
 	// 媒体库：文件根目录在启动时自动创建；管理接口与用户侧文件访问始终注册。
 	mediaStorage, err := media.NewStorage(cfg.MediaRoot)
 	if err != nil {
 		return Deps{}, err
 	}
-	mediaSvc := media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB)
-	mediaHandler := media.NewHandler(mediaSvc, adminSvc)
+	mediaSvc := media.New(pool, logger, mediaStorage, cfg.MediaMaxUploadMB, media.WithUserMaxUploadMB(cfg.UserMediaMaxUploadMB))
+	convSvc.SetMedia(mediaSvc)
+	mediaHandler := media.NewHandler(mediaSvc, adminSvc, media.WithUploadLimiter(settings.Limiter(moderation.RuleMediaUpload)))
+
+	// 外站总开关默认关闭；装配与 bot 开关无关，构造时不连接外站。
+	externalBridge, err := external.NewConfiguredBridge(external.BridgeDeps{
+		Pool: pool, Settings: externalSettings, Match: matchSvc, Conv: convSvc,
+		Media: mediaSvc, Hub: hub, Logger: logger,
+	}, cfg)
+	if err != nil {
+		return Deps{}, fmt.Errorf("装配外站连接: %w", err)
+	}
+	matchSvc.SetExternalMatcher(externalBridge, hub.OnlineCount)
+	convSvc.AddObserver(externalBridge)
+	externalSettings.OnChange(externalBridge.ApplySettings)
 
 	// AI 机器人：管理接口始终可用；引擎也始终创建并运行（how.md §15.2）。
 	// 生效配置（开关、模型接入、兜底时间、瓶龄、时区）来自 bot_settings，后台可热切换；
@@ -221,29 +244,33 @@ func NewDefaultDeps(cfg *config.Config, pool *pgxpool.Pool, logger *slog.Logger)
 	}
 
 	return Deps{
-		Cfg:          cfg,
-		Pool:         pool,
-		Logger:       logger,
-		Identity:     identityHandler,
-		Verify:       verifyHandler,
-		Realtime:     gateway,
-		Conversation: convSvc,
-		Report:       reportSvc,
-		Ban:          banSvc,
-		Resolver:     resolver,
-		Match:        matchSvc,
-		Room:         roomSvc,
-		Bottle:       bottleSvc,
-		Private:      privateSvc,
-		Admin:        adminSvc,
-		Profile:      profileHandler,
-		VIP:          vipHandler,
-		Feed:         feedHandler,
-		Story:        storyHandler,
-		StoryService: storySvc,
-		Media:        mediaHandler,
-		BotAdmin:     botHandler,
-		BotEngine:    botEngine,
+		Cfg:              cfg,
+		Pool:             pool,
+		Logger:           logger,
+		Identity:         identityHandler,
+		Verify:           verifyHandler,
+		Realtime:         gateway,
+		Conversation:     convSvc,
+		Report:           reportSvc,
+		Ban:              banSvc,
+		Resolver:         resolver,
+		Match:            matchSvc,
+		Room:             roomSvc,
+		Bottle:           bottleSvc,
+		Private:          privateSvc,
+		Admin:            adminSvc,
+		ExternalSettings: externalSettings,
+		ExternalAdmin:    externalHandler,
+		ExternalBridge:   externalBridge,
+		Profile:          profileHandler,
+		VIP:              vipHandler,
+		Feed:             feedHandler,
+		Story:            storyHandler,
+		StoryService:     storySvc,
+		Media:            mediaHandler,
+		MediaService:     mediaSvc,
+		BotAdmin:         botHandler,
+		BotEngine:        botEngine,
 	}, nil
 }
 
@@ -348,6 +375,7 @@ func (s *Server) Handler() http.Handler {
 
 	// 媒体文件（用户侧）：只有会话内消息引用过的媒体才可访问。
 	if s.deps.Media != nil {
+		mux.Handle("POST /api/media/upload", chatProtected(http.HandlerFunc(s.deps.Media.UploadUserHandler)))
 		mux.Handle("GET /api/media/{id}", chatProtected(http.HandlerFunc(s.deps.Media.ServeFileHandler)))
 	}
 
@@ -475,6 +503,13 @@ func (s *Server) adminHandler() http.Handler {
 		am.Handle("DELETE /api/admin/media-items/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.Media.DeleteItemHandler)))
 		am.Handle("GET /api/admin/media-items/{id}/file", a.RequireAdmin(http.HandlerFunc(s.deps.Media.AdminFileHandler)))
 	}
+	if s.deps.ExternalBridge != nil {
+		am.Handle("GET /api/admin/external/status", a.RequireAdmin(http.HandlerFunc(s.deps.ExternalBridge.StatusHandler)))
+	}
+	if s.deps.ExternalAdmin != nil {
+		am.Handle("GET /api/admin/external/settings", a.RequireAdmin(http.HandlerFunc(s.deps.ExternalAdmin.GetSettingsHandler)))
+		am.Handle("PUT /api/admin/external/settings", a.RequireAdmin(http.HandlerFunc(s.deps.ExternalAdmin.UpdateSettingsHandler)))
+	}
 	if s.deps.BotAdmin != nil {
 		am.Handle("POST /api/admin/character-cards/import", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.ImportCardHandler)))
 		am.Handle("GET /api/admin/character-cards/{id}", a.RequireAdmin(http.HandlerFunc(s.deps.BotAdmin.GetCardHandler)))
@@ -514,6 +549,13 @@ func (s *Server) adminHandler() http.Handler {
 		}
 	}
 	return admin.IPAllowlist(prefixes, s.deps.Resolver)(am)
+}
+
+// ShutdownExternal 在匹配 goroutine 停止前关闭外站并等待在途激活完成。
+func (s *Server) ShutdownExternal() {
+	if s.deps.ExternalBridge != nil {
+		s.deps.ExternalBridge.Close()
+	}
 }
 
 // ShutdownWS 关闭全部 WebSocket 连接（关闭码 1001），在 HTTP 服务停止接收新连接后调用。

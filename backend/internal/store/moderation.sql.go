@@ -203,7 +203,7 @@ func (q *Queries) InsertTypedReport(ctx context.Context, arg InsertTypedReportPa
 }
 
 const listReportContextAfter = `-- name: ListReportContextAfter :many
-SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at
+SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at, m.kind, m.media_id
 FROM messages m
 JOIN identities i ON i.id = m.sender_identity_id
 WHERE m.conversation_id = $1 AND m.id > $2
@@ -223,6 +223,8 @@ type ListReportContextAfterRow struct {
 	Body           string             `json:"body"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	BurnedAt       pgtype.Timestamptz `json:"burned_at"`
+	Kind           string             `json:"kind"`
+	MediaID        pgtype.UUID        `json:"media_id"`
 }
 
 func (q *Queries) ListReportContextAfter(ctx context.Context, arg ListReportContextAfterParams) ([]ListReportContextAfterRow, error) {
@@ -241,6 +243,8 @@ func (q *Queries) ListReportContextAfter(ctx context.Context, arg ListReportCont
 			&i.Body,
 			&i.CreatedAt,
 			&i.BurnedAt,
+			&i.Kind,
+			&i.MediaID,
 		); err != nil {
 			return nil, err
 		}
@@ -253,7 +257,7 @@ func (q *Queries) ListReportContextAfter(ctx context.Context, arg ListReportCont
 }
 
 const listReportContextBefore = `-- name: ListReportContextBefore :many
-SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at
+SELECT m.id, m.sender_member_id, i.nickname, m.body, m.created_at, m.burned_at, m.kind, m.media_id
 FROM messages m
 JOIN identities i ON i.id = m.sender_identity_id
 WHERE m.conversation_id = $1 AND m.id <= $2
@@ -273,6 +277,8 @@ type ListReportContextBeforeRow struct {
 	Body           string             `json:"body"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	BurnedAt       pgtype.Timestamptz `json:"burned_at"`
+	Kind           string             `json:"kind"`
+	MediaID        pgtype.UUID        `json:"media_id"`
 }
 
 func (q *Queries) ListReportContextBefore(ctx context.Context, arg ListReportContextBeforeParams) ([]ListReportContextBeforeRow, error) {
@@ -291,6 +297,8 @@ func (q *Queries) ListReportContextBefore(ctx context.Context, arg ListReportCon
 			&i.Body,
 			&i.CreatedAt,
 			&i.BurnedAt,
+			&i.Kind,
+			&i.MediaID,
 		); err != nil {
 			return nil, err
 		}

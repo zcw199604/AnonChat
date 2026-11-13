@@ -54,6 +54,8 @@ type snapshotItem struct {
 	CreatedAt string `json:"createdAt"`
 	BurnedAt  string `json:"burnedAt,omitempty"`
 	Reported  bool   `json:"reported"`
+	Kind      string `json:"kind,omitempty"`
+	MediaID   string `json:"mediaId,omitempty"`
 }
 
 // ReportService 负责举报与证据快照。
@@ -191,14 +193,14 @@ func (r *ReportService) buildSnapshot(ctx context.Context, convID pgtype.UUID, m
 			return nil, err
 		}
 		for _, row := range before {
-			items[row.ID] = toSnapshotItem(row.ID, row.SenderMemberID, row.Nickname, row.Body, row.CreatedAt, row.BurnedAt, reported)
+			items[row.ID] = toSnapshotItem(row.ID, row.SenderMemberID, row.Nickname, row.Body, row.Kind, row.MediaID, row.CreatedAt, row.BurnedAt, reported)
 		}
 		after, err := r.q.ListReportContextAfter(ctx, store.ListReportContextAfterParams{ConversationID: convID, ID: id})
 		if err != nil {
 			return nil, err
 		}
 		for _, row := range after {
-			items[row.ID] = toSnapshotItem(row.ID, row.SenderMemberID, row.Nickname, row.Body, row.CreatedAt, row.BurnedAt, reported)
+			items[row.ID] = toSnapshotItem(row.ID, row.SenderMemberID, row.Nickname, row.Body, row.Kind, row.MediaID, row.CreatedAt, row.BurnedAt, reported)
 		}
 	}
 
@@ -211,7 +213,7 @@ func (r *ReportService) buildSnapshot(ctx context.Context, convID pgtype.UUID, m
 }
 
 // toSnapshotItem 构造快照条目。
-func toSnapshotItem(id int64, memberID int32, nickname, body string, createdAt, burnedAt pgtype.Timestamptz, reported map[int64]struct{}) snapshotItem {
+func toSnapshotItem(id int64, memberID int32, nickname, body, kind string, mediaID pgtype.UUID, createdAt, burnedAt pgtype.Timestamptz, reported map[int64]struct{}) snapshotItem {
 	_, isReported := reported[id]
 	it := snapshotItem{
 		ID:        id,
@@ -220,6 +222,10 @@ func toSnapshotItem(id int64, memberID int32, nickname, body string, createdAt, 
 		Body:      body,
 		CreatedAt: formatSnapshotTS(createdAt),
 		Reported:  isReported,
+		Kind:      kind,
+	}
+	if mediaID.Valid {
+		it.MediaID = mediaID.String()
 	}
 	if burnedAt.Valid {
 		it.BurnedAt = formatSnapshotTS(burnedAt)

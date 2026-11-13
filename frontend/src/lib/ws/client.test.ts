@@ -37,6 +37,39 @@ describe('WsClient', () => {
     return { fake, resume, client }
   }
 
+  it('媒体首次发送与重试均保留 kind/mediaId，文本仍为 text', async () => {
+    const { fake, client } = setup()
+    client.connect()
+    fake.latest().open()
+    const { clientMsgId } = client.sendMessage('c1', '配文', { kind: 'image', mediaId: 'm1' })
+    let frame = fake.latest().sent[0]
+    expect(frame.d).toMatchObject({ conversationId: 'c1', clientMsgId, body: '配文', kind: 'image', mediaId: 'm1' })
+    fake.latest().message({ t: 'error', id: frame.id, d: { code: 'internal', message: '失败' } })
+    await Promise.resolve()
+    await Promise.resolve()
+    client.retry(clientMsgId)
+    frame = fake.latest().sent.at(-1)!
+    expect(frame.d).toMatchObject({ clientMsgId, kind: 'image', mediaId: 'm1' })
+    fake.latest().message({ t: 'ack', id: frame.id, d: { messageId: 1 } })
+    client.sendMessage('c1', '[private.jpg]')
+    frame = fake.latest().sent.at(-1)!
+    expect(frame.d).toMatchObject({ kind: 'text', body: '[private.jpg]' })
+    expect(frame.d).not.toHaveProperty('mediaId')
+    fake.latest().message({ t: 'ack', id: frame.id, d: { messageId: 2 } })
+    client.close()
+  })
+
+  it('无请求 id 的 media_rejected 仍经统一 error 事件分发', () => {
+    const { fake, client } = setup()
+    const handler = vi.fn()
+    client.on('error', handler)
+    client.connect()
+    fake.latest().open()
+    fake.latest().message({ t: 'error', d: { code: 'media_rejected', message: '对方站点暂不支持该媒体，发送失败' } })
+    expect(handler).toHaveBeenCalledWith({ code: 'media_rejected', message: '对方站点暂不支持该媒体，发送失败' }, expect.objectContaining({ t: 'error' }))
+    client.close()
+  })
+
   it('request 在收到同 id 的 ack 时 resolve', async () => {
     const { fake, client } = setup()
     client.connect()

@@ -12,13 +12,17 @@ import (
 )
 
 const canIdentityAccessMedia = `-- name: CanIdentityAccessMedia :one
-SELECT EXISTS (
+SELECT EXISTS (SELECT 1 WHERE EXISTS (
     SELECT 1
     FROM messages m
     JOIN conversation_members cm
       ON cm.conversation_id = m.conversation_id AND cm.identity_id = $2
     WHERE m.media_id = $1 AND m.burned_at IS NULL
-) AS allowed
+) OR EXISTS (
+    SELECT 1 FROM media_items mi
+    WHERE mi.id = $1 AND mi.owner_identity_id = $2
+      AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.media_id = mi.id)
+)) AS allowed
 `
 
 type CanIdentityAccessMediaParams struct {
@@ -26,7 +30,7 @@ type CanIdentityAccessMediaParams struct {
 	IdentityID pgtype.UUID `json:"identity_id"`
 }
 
-// 用户侧访问媒体：只有出现在请求者所属会话的未焚毁消息里才放行（已离开的成员也可以）。
+// 未发送时允许上传者预览；发送后只按会话中的未焚毁消息授权。
 func (q *Queries) CanIdentityAccessMedia(ctx context.Context, arg CanIdentityAccessMediaParams) (bool, error) {
 	row := q.db.QueryRow(ctx, canIdentityAccessMedia, arg.MediaID, arg.IdentityID)
 	var allowed bool
@@ -58,6 +62,34 @@ func (q *Queries) DeleteMediaItem(ctx context.Context, id pgtype.UUID) (int64, e
 	return result.RowsAffected(), nil
 }
 
+const deleteOrphanNonLibraryMedia = `-- name: DeleteOrphanNonLibraryMedia :many
+DELETE FROM media_items mi
+WHERE mi.id = ANY($1::uuid[])
+  AND mi.source <> 'library'
+  AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.media_id = mi.id AND m.burned_at IS NULL)
+RETURNING storage_key
+`
+
+func (q *Queries) DeleteOrphanNonLibraryMedia(ctx context.Context, ids []pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, deleteOrphanNonLibraryMedia, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var storage_key string
+		if err := rows.Scan(&storage_key); err != nil {
+			return nil, err
+		}
+		items = append(items, storage_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getMediaFolder = `-- name: GetMediaFolder :one
 SELECT id, name, created_at
 FROM media_folders
@@ -72,7 +104,7 @@ func (q *Queries) GetMediaFolder(ctx context.Context, id pgtype.UUID) (MediaFold
 }
 
 const getMediaItem = `-- name: GetMediaItem :one
-SELECT id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at
+SELECT id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at, source, owner_identity_id
 FROM media_items
 WHERE id = $1
 `
@@ -91,6 +123,39 @@ func (q *Queries) GetMediaItem(ctx context.Context, id pgtype.UUID) (MediaItem, 
 		&i.Tags,
 		&i.Caption,
 		&i.CreatedAt,
+		&i.Source,
+		&i.OwnerIdentityID,
+	)
+	return i, err
+}
+
+const getUserMediaForSend = `-- name: GetUserMediaForSend :one
+SELECT id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at, source, owner_identity_id
+FROM media_items
+WHERE id = $1 AND source = 'user' AND owner_identity_id = $2
+`
+
+type GetUserMediaForSendParams struct {
+	ID              pgtype.UUID `json:"id"`
+	OwnerIdentityID pgtype.UUID `json:"owner_identity_id"`
+}
+
+func (q *Queries) GetUserMediaForSend(ctx context.Context, arg GetUserMediaForSendParams) (MediaItem, error) {
+	row := q.db.QueryRow(ctx, getUserMediaForSend, arg.ID, arg.OwnerIdentityID)
+	var i MediaItem
+	err := row.Scan(
+		&i.ID,
+		&i.FolderID,
+		&i.Kind,
+		&i.Mime,
+		&i.SizeBytes,
+		&i.StorageKey,
+		&i.OriginalName,
+		&i.Tags,
+		&i.Caption,
+		&i.CreatedAt,
+		&i.Source,
+		&i.OwnerIdentityID,
 	)
 	return i, err
 }
@@ -109,21 +174,23 @@ func (q *Queries) InsertMediaFolder(ctx context.Context, name string) (MediaFold
 }
 
 const insertMediaItem = `-- name: InsertMediaItem :one
-INSERT INTO media_items (id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-RETURNING id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at
+INSERT INTO media_items (id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, source, owner_identity_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at, source, owner_identity_id
 `
 
 type InsertMediaItemParams struct {
-	ID           pgtype.UUID `json:"id"`
-	FolderID     pgtype.UUID `json:"folder_id"`
-	Kind         string      `json:"kind"`
-	Mime         string      `json:"mime"`
-	SizeBytes    int64       `json:"size_bytes"`
-	StorageKey   string      `json:"storage_key"`
-	OriginalName string      `json:"original_name"`
-	Tags         []string    `json:"tags"`
-	Caption      string      `json:"caption"`
+	ID              pgtype.UUID `json:"id"`
+	FolderID        pgtype.UUID `json:"folder_id"`
+	Kind            string      `json:"kind"`
+	Mime            string      `json:"mime"`
+	SizeBytes       int64       `json:"size_bytes"`
+	StorageKey      string      `json:"storage_key"`
+	OriginalName    string      `json:"original_name"`
+	Tags            []string    `json:"tags"`
+	Caption         string      `json:"caption"`
+	Source          string      `json:"source"`
+	OwnerIdentityID pgtype.UUID `json:"owner_identity_id"`
 }
 
 func (q *Queries) InsertMediaItem(ctx context.Context, arg InsertMediaItemParams) (MediaItem, error) {
@@ -137,6 +204,8 @@ func (q *Queries) InsertMediaItem(ctx context.Context, arg InsertMediaItemParams
 		arg.OriginalName,
 		arg.Tags,
 		arg.Caption,
+		arg.Source,
+		arg.OwnerIdentityID,
 	)
 	var i MediaItem
 	err := row.Scan(
@@ -150,6 +219,8 @@ func (q *Queries) InsertMediaItem(ctx context.Context, arg InsertMediaItemParams
 		&i.Tags,
 		&i.Caption,
 		&i.CreatedAt,
+		&i.Source,
+		&i.OwnerIdentityID,
 	)
 	return i, err
 }
@@ -280,7 +351,7 @@ func (q *Queries) ListMediaFolders(ctx context.Context) ([]ListMediaFoldersRow, 
 
 const listMediaItemsByFolder = `-- name: ListMediaItemsByFolder :many
 
-SELECT id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at
+SELECT id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at, source, owner_identity_id
 FROM media_items
 WHERE folder_id = $1
 ORDER BY created_at DESC, id
@@ -307,7 +378,50 @@ func (q *Queries) ListMediaItemsByFolder(ctx context.Context, folderID pgtype.UU
 			&i.Tags,
 			&i.Caption,
 			&i.CreatedAt,
+			&i.Source,
+			&i.OwnerIdentityID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOrphanNonLibraryMedia = `-- name: ListOrphanNonLibraryMedia :many
+SELECT mi.id, mi.created_at FROM media_items mi
+WHERE mi.source <> 'library' AND mi.created_at < $1
+  AND (mi.created_at, mi.id) > ($2::timestamptz, $3::uuid)
+  AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.media_id = mi.id AND m.burned_at IS NULL)
+ORDER BY mi.created_at, mi.id
+LIMIT 500
+FOR UPDATE OF mi SKIP LOCKED
+`
+
+type ListOrphanNonLibraryMediaParams struct {
+	Cutoff         pgtype.Timestamptz `json:"cutoff"`
+	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
+	AfterID        pgtype.UUID        `json:"after_id"`
+}
+
+type ListOrphanNonLibraryMediaRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListOrphanNonLibraryMedia(ctx context.Context, arg ListOrphanNonLibraryMediaParams) ([]ListOrphanNonLibraryMediaRow, error) {
+	rows, err := q.db.Query(ctx, listOrphanNonLibraryMedia, arg.Cutoff, arg.AfterCreatedAt, arg.AfterID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOrphanNonLibraryMediaRow{}
+	for rows.Next() {
+		var i ListOrphanNonLibraryMediaRow
+		if err := rows.Scan(&i.ID, &i.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -320,7 +434,7 @@ func (q *Queries) ListMediaItemsByFolder(ctx context.Context, folderID pgtype.UU
 
 const pickMediaForBot = `-- name: PickMediaForBot :one
 
-SELECT id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at
+SELECT id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at, source, owner_identity_id
 FROM media_items mi
 WHERE mi.folder_id = $1
   AND mi.tags && $2::text[]
@@ -355,6 +469,8 @@ func (q *Queries) PickMediaForBot(ctx context.Context, arg PickMediaForBotParams
 		&i.Tags,
 		&i.Caption,
 		&i.CreatedAt,
+		&i.Source,
+		&i.OwnerIdentityID,
 	)
 	return i, err
 }
@@ -382,7 +498,7 @@ const updateMediaItem = `-- name: UpdateMediaItem :one
 UPDATE media_items
 SET tags = $2, caption = $3
 WHERE id = $1
-RETURNING id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at
+RETURNING id, folder_id, kind, mime, size_bytes, storage_key, original_name, tags, caption, created_at, source, owner_identity_id
 `
 
 type UpdateMediaItemParams struct {
@@ -405,6 +521,8 @@ func (q *Queries) UpdateMediaItem(ctx context.Context, arg UpdateMediaItemParams
 		&i.Tags,
 		&i.Caption,
 		&i.CreatedAt,
+		&i.Source,
+		&i.OwnerIdentityID,
 	)
 	return i, err
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
@@ -48,23 +49,82 @@ var allowedMIME = map[string]struct {
 
 // Service 提供媒体文件夹与媒体条目的增删改查，以及磁盘文件的管理。
 type Service struct {
-	q              *store.Queries
-	storage        *Storage
-	logger         *slog.Logger
-	maxUploadBytes int64
+	q                  *store.Queries
+	storage            *Storage
+	logger             *slog.Logger
+	maxUploadBytes     int64
+	userMaxUploadBytes int64
 }
 
 // New 创建媒体服务。maxUploadMB 是单个文件的大小上限（MB）。
-func New(pool *pgxpool.Pool, logger *slog.Logger, storage *Storage, maxUploadMB int) *Service {
+func New(pool *pgxpool.Pool, logger *slog.Logger, storage *Storage, maxUploadMB int, opts ...Option) *Service {
 	if maxUploadMB <= 0 {
 		maxUploadMB = 100
 	}
-	return &Service{
-		q:              store.New(pool),
-		storage:        storage,
-		logger:         logger,
-		maxUploadBytes: int64(maxUploadMB) << 20,
+	s := &Service{
+		q:                  store.New(pool),
+		storage:            storage,
+		logger:             logger,
+		maxUploadBytes:     int64(maxUploadMB) << 20,
+		userMaxUploadBytes: 20 << 20,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+type Option func(*Service)
+
+func WithUserMaxUploadMB(mb int) Option {
+	return func(s *Service) {
+		if mb > 0 {
+			s.userMaxUploadBytes = int64(mb) << 20
+		}
+	}
+}
+
+// SaveUserItem 保存当前身份上传的媒体，供发送和发送前预览。
+func (s *Service) SaveUserItem(ctx context.Context, ownerID pgtype.UUID, originalName string, r io.Reader) (store.MediaItem, error) {
+	return s.saveNonLibrary(ctx, "user", ownerID, originalName, r, s.userMaxUploadBytes)
+}
+
+// SaveExternalItem 保存外站下载的媒体。
+func (s *Service) SaveExternalItem(ctx context.Context, originalName string, r io.Reader) (store.MediaItem, error) {
+	return s.saveNonLibrary(ctx, "external", pgtype.UUID{}, originalName, r, s.maxUploadBytes)
+}
+func (s *Service) saveNonLibrary(ctx context.Context, source string, ownerID pgtype.UUID, originalName string, r io.Reader, maxBytes int64) (store.MediaItem, error) {
+	id, err := genUUID()
+	if err != nil {
+		return store.MediaItem{}, err
+	}
+	file, err := s.saveFile(ctx, source+"/"+time.Now().UTC().Format("200601"), id, r, maxBytes)
+	if err != nil {
+		return store.MediaItem{}, err
+	}
+	return s.insertSaved(ctx, store.InsertMediaItemParams{ID: id, Source: source, OwnerIdentityID: ownerID, Kind: file.kind, Mime: file.mime, SizeBytes: file.size, StorageKey: file.key, OriginalName: truncateRunes(strings.TrimSpace(originalName), maxNameRunes*4), Tags: []string{}})
+}
+
+// GetUserMediaForSend 仅返回属于当前身份的用户上传媒体。
+func (s *Service) GetUserMediaForSend(ctx context.Context, mediaID, ownerID pgtype.UUID) (store.MediaItem, error) {
+	item, err := s.q.GetUserMediaForSend(ctx, store.GetUserMediaForSendParams{ID: mediaID, OwnerIdentityID: ownerID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return store.MediaItem{}, ErrItemNotFound
+	}
+	return item, err
+}
+
+// OpenItem 为已核实消息归属的 Bridge 调用方打开媒体文件。
+func (s *Service) OpenItem(ctx context.Context, id pgtype.UUID) (store.MediaItem, *os.File, error) {
+	item, err := s.GetItem(ctx, id)
+	if err != nil {
+		return store.MediaItem{}, nil, err
+	}
+	f, err := s.storage.Open(item.StorageKey)
+	if err != nil {
+		return store.MediaItem{}, nil, err
+	}
+	return item, f, nil
 }
 
 // Storage 返回底层存储。
@@ -220,53 +280,66 @@ func (s *Service) SaveItem(ctx context.Context, folderID pgtype.UUID, originalNa
 	if err != nil {
 		return store.MediaItem{}, err
 	}
-	// 临时文件与最终文件同目录，rename 才能原子完成。
-	tmpKey := folderID.String() + "/" + itemID.String()
-	tmp, err := s.storage.CreateTemp(tmpKey)
+	file, err := s.saveFile(ctx, folderID.String(), itemID, r, s.maxUploadBytes)
 	if err != nil {
 		return store.MediaItem{}, err
 	}
-	size, err := s.storage.WriteTemp(tmp, r, s.maxUploadBytes)
+	item, err := s.q.InsertMediaItem(ctx, store.InsertMediaItemParams{
+		ID: itemID, FolderID: folderID, Source: "library",
+		Kind: file.kind, Mime: file.mime, SizeBytes: file.size, StorageKey: file.key,
+		OriginalName: truncateRunes(strings.TrimSpace(originalName), maxNameRunes*4),
+		Tags:         normalized, Caption: capt,
+	})
 	if err != nil {
-		s.storage.Discard(tmp)
-		if errors.Is(err, ErrTooLarge) {
-			return store.MediaItem{}, httpx.NewError(httpx.CodeMediaRejected, "文件超过大小上限")
+		// 数据库写入失败：删掉刚保存的文件，避免产生孤儿文件。
+		if rerr := s.storage.Remove(file.key); rerr != nil {
+			s.logger.Warn("回滚媒体文件失败", "storage_key", file.key, "error", rerr)
 		}
 		return store.MediaItem{}, err
 	}
+	return item, nil
+}
 
-	// 只信任内容嗅探：读取临时文件的前 512 字节判断类型，忽略文件名与客户端声明。
+type savedFile struct {
+	key, kind, mime string
+	size            int64
+}
+
+// saveFile 只保存文件；所有来源共用内容嗅探、大小限制与原子提交。
+func (s *Service) saveFile(ctx context.Context, keyPrefix string, id pgtype.UUID, r io.Reader, maxBytes int64) (savedFile, error) {
+	tmp, err := s.storage.CreateTemp(keyPrefix + "/" + id.String())
+	if err != nil {
+		return savedFile{}, err
+	}
+	size, err := s.storage.WriteTemp(tmp, r, maxBytes)
+	if err != nil {
+		s.storage.Discard(tmp)
+		if errors.Is(err, ErrTooLarge) {
+			return savedFile{}, httpx.NewError(httpx.CodeMediaRejected, "文件超过大小上限")
+		}
+		return savedFile{}, err
+	}
 	mime, err := sniffMIME(tmp.Name())
 	if err != nil {
 		s.storage.Discard(tmp)
-		return store.MediaItem{}, err
+		return savedFile{}, err
 	}
 	info, ok := allowedMIME[mime]
 	if !ok {
 		s.storage.Discard(tmp)
-		return store.MediaItem{}, httpx.NewError(httpx.CodeMediaRejected, "只支持 jpg/png/gif/webp 图片和 mp4/webm 视频")
+		return savedFile{}, httpx.NewError(httpx.CodeMediaRejected, "只支持 jpg/png/gif/webp 图片和 mp4/webm 视频")
 	}
-
-	storageKey := folderID.String() + "/" + itemID.String() + info.ext
-	if err := s.storage.Commit(tmp, storageKey); err != nil {
-		return store.MediaItem{}, err
+	key := keyPrefix + "/" + id.String() + info.ext
+	if err = s.storage.Commit(tmp, key); err != nil {
+		return savedFile{}, err
 	}
-
-	item, err := s.q.InsertMediaItem(ctx, store.InsertMediaItemParams{
-		ID:           itemID,
-		FolderID:     folderID,
-		Kind:         info.kind,
-		Mime:         mime,
-		SizeBytes:    size,
-		StorageKey:   storageKey,
-		OriginalName: truncateRunes(strings.TrimSpace(originalName), maxNameRunes*4),
-		Tags:         normalized,
-		Caption:      capt,
-	})
+	return savedFile{key: key, kind: info.kind, mime: mime, size: size}, nil
+}
+func (s *Service) insertSaved(ctx context.Context, params store.InsertMediaItemParams) (store.MediaItem, error) {
+	item, err := s.q.InsertMediaItem(ctx, params)
 	if err != nil {
-		// 数据库写入失败：删掉刚保存的文件，避免产生孤儿文件。
-		if rerr := s.storage.Remove(storageKey); rerr != nil {
-			s.logger.Warn("回滚媒体文件失败", "storage_key", storageKey, "error", rerr)
+		if rerr := s.storage.Remove(params.StorageKey); rerr != nil {
+			s.logger.Warn("回滚媒体文件失败", "storage_key", params.StorageKey, "error", rerr)
 		}
 		return store.MediaItem{}, err
 	}

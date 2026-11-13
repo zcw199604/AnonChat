@@ -1,7 +1,7 @@
 # 接口协议（REST + WebSocket）
 
 > 以代码为准。REST 路由见 `backend/internal/api/routes.go`（本文件的接口表与其逐条对应）；WS 类型见 `backend/internal/realtime/protocol.go`；错误码常量见 `backend/internal/platform/httpx/response.go`。
-> 最后同步：后台可配置 bot 开关与模型接入（202611062351 / B7）。
+> 最后同步：外站匹配接入与用户媒体（202611131925）。
 
 ## 通用
 
@@ -9,7 +9,7 @@
 - 管理后台使用独立 Cookie `__Host-admin`（8 小时），身份 Cookie 对其无效；`ADMIN_IP_ALLOWLIST` 可限制访问 IP。
 - 错误统一格式：`{"error":{"code":"<snake_case>","message":"<中文>"}}`。
 - 修改类请求（POST/PUT/PATCH/DELETE）校验 `Origin` 是否在 `ALLOWED_ORIGINS`，否则 `forbidden_origin`。
-- REST 请求体上限 64KB；WS 单帧上限 16KB。
+- REST JSON 请求体上限 64KB；媒体 multipart 上传使用各自的文件上限；WS 单帧上限 16KB。
 - 新接口的中间件分工：只读公开接口（统计、动态、公告、作品列表与阅读）用 `protected`；发布公开 UGC 的接口（`POST /api/broadcasts`、`POST /api/stories`）与参与聊天的接口（故事认领、故事结束）用 `chatProtected`；管理后台接口一律 `admin.RequireAdmin`，且写操作写入 `admin_audit_logs`。
 
 ## REST 接口
@@ -46,10 +46,12 @@
 ### 媒体文件（用户侧）
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/media/{id}` | 会话内消息引用过的媒体文件（`chatProtected`）。只有该媒体出现在请求者所属会话的**未焚毁**消息里才放行（已离开的成员也可访问）；不存在与无权限都返回 404。支持 Range（视频拖动），`Cache-Control: private, max-age=86400` |
+| POST | `/api/media/upload` | `chatProtected`；multipart 单个 `file` → `{mediaId,kind,mime,sizeBytes}`。MIME 嗅探后仅接受 JPEG/PNG/GIF/WebP/MP4/WebM，用户上限 `USER_MEDIA_MAX_UPLOAD_MB`（默认 20 MiB）；类型或大小不合格返回 `media_rejected`，默认每身份 10 次/分钟（规则 `media_upload_per_minute`），超限 `rate_limited` |
+| GET | `/api/media/{id}` | `chatProtected`；媒体出现在请求者所属会话的**未焚毁**消息里时放行（已离开的成员也可访问）；尚未被任何消息引用的媒体也允许其 owner 预览。不存在与无权限均 404。支持 Range（视频拖动），`Cache-Control: private, max-age=86400` |
 
 - `msg.new` 与历史消息在媒体消息上多一个可选字段 `mediaUrl`（`/api/media/<id>`，`omitempty`）：真人与 bot 消息的字段集合完全一致。
 - 前端：图片懒加载 + 点击查看原图，视频用 `<video controls preload="metadata" playsInline>`；缺失 `mediaUrl` 时显示「媒体已失效」。
+- 上传入口仅在匹配、漂流瓶、私聊显示；选择文件后先上传再发送，上传期间附件按钮禁用，失败提示并恢复。聊天室与故事书无附件入口。来源：[外站匹配接入与用户媒体方案](../plan/202611131925_external-match-bridge/how.md)。
 
 ### 聊天室
 | 方法 | 路径 | 说明 |
@@ -115,7 +117,7 @@
 | POST | `/api/admin/login` | `{username,password}` |
 | POST | `/api/admin/logout` | 退出 |
 | GET | `/api/admin/reports` | 举报列表（status 筛选、游标） |
-| GET | `/api/admin/reports/{id}` | 举报详情（快照、被举报者摘要、生效封禁） |
+| GET | `/api/admin/reports/{id}` | 举报详情（快照、被举报者摘要、生效封禁）；消息快照新增可选 `kind/mediaId`，图片/视频使用已有后台媒体文件接口显示，不复制文件字节 |
 | POST | `/api/admin/reports/{id}/resolve` | `{action:"dismiss"\|"ban", ban?}` |
 | GET | `/api/admin/bans` | 封禁列表（active 筛选、游标） |
 | POST | `/api/admin/bans` | `{subjects:[{type,value}],durationHours?,reason}` |
@@ -153,6 +155,22 @@
 | GET | `/api/admin/bot-settings` | 全局设置：开关、Base URL、模型、超时、缓存 key、兜底时间、瓶龄、时区，以及 `apiKeySet`/`apiKeyHint`/`apiKeySource`/`apiKeyStale`、`secretStorageAvailable`、`ready`/`notReadyReason`（**不含 key**） |
 | PUT | `/api/admin/bot-settings` | 全量保存并立即生效（`engine.Invalidate()`）。`apiKey` 省略/为空表示保持不变，`clearApiKey` 清除；未配置 `SETTINGS_ENC_KEY` 时保存 key 返回 `invalid_request`；改 `baseUrl` 又没给新 key（且旧地址上有生效的 key）时返回 `invalid_request`「修改 Base URL 时需要重新填写 API Key」，带 `clearApiKey` 时允许；写审计（不含 key） |
 | POST | `/api/admin/bot-settings/test` | 测试连接：用已保存设置（请求体可临时覆盖 `baseUrl`/`model`/`apiKey`）发一次极短请求，返回 `{ok,latencyMs,model,error}`；每管理员每分钟最多 10 次；`error` 已截断且不含 key。**`baseUrl` 与已保存不同时必须同时带 `apiKey`，否则返回 ok=false 且不发请求**（key 与 Base URL 绑定，防止被引到别的地址） |
+| GET/PUT | `/api/admin/external/settings` | 读取 / 全量保存外站设置（字段与范围见下）；越界 400 `invalid_request`；保存后立即更新缓存并应用，写审计 `external.settings.update` |
+| GET | `/api/admin/external/status` | `{providers,online,queue}`；后台「外站接入」每 10 秒刷新 |
+
+### 外站设置与状态
+
+以上外站后台接口均要求管理员登录，未登录返回 401。来源：[外站方案 §7](../plan/202611131925_external-match-bridge/how.md#7-后台与前端)。
+
+| 设置字段 | 默认值 | 允许范围 |
+|---|---|---|
+| `enabled` / `chat2019Enabled` / `wanfengEnabled` | 均 `false` | boolean |
+| `onlineThreshold` | 5 | 整数 0–100000 |
+| `localWaitSeconds` | 10 | 整数秒 0–600 |
+| `externalMatchSeconds` | 10 | 整数秒 3–120 |
+| `chat2019MaxSessions` / `wanfengMaxSessions` | 均 20 | 整数 1–1000 |
+
+`providers[]` 含 `name`、`enabled`、`available`、`reason`、`links`、`matching`、`inRoom`、`idle`、`cooldownUntil`、`lastError`、`lastErrorAt`、`counters`；计数字段为 `started`、`found`、`cancelled`、`relayedIn`、`relayedOut`、`mediaFailed`、`textFailed`、`pendingDropped`。`online` 为在线身份数、`queue` 为本站排队数。关闭总开关立即关闭所有外站连接并结束进行中的外站会话。
 
 ## WebSocket 协议
 
@@ -165,6 +183,7 @@
 要点：
 - 客户端每 25 秒发 `ping`；服务端 60 秒收不到任何帧则断开；单帧 >16KB 断开（1009）；写缓冲满被视为慢客户端。
 - `msg.send`：服务端先回 `ack {messageId,createdAt}` 再广播 `msg.new`；重复 `clientMsgId` 幂等返回同一 `messageId` 且不重复广播。
+- `msg.send.d`：`{conversationId,clientMsgId,kind,body,mediaId?}`。用户可发 `text`，或在 `match/bottle/private` 发送 `image/video`；媒体必须先上传，`mediaId` 对应 `source=user`、owner 为发送者且 kind 一致。媒体正文可以为空；他人/不存在/非 user 来源/类型不一致返回 `invalid_request`「媒体不存在或不属于你」，room/story 返回「该会话不支持发送媒体」。媒体在消息插入前失效导致外键失败时返回 `invalid_request`「媒体已失效，请重新上传」。
 - `msg.new.message.nickname`：房间会话为真实昵称；故事会话为角色名；1v1 会话（match/bottle/private）为空字符串——前端在 1v1 场景改用匿名代号 `匿名·XXXX`（`sha256(conversationId+':'+memberId)` 前 4 位，见 `frontend/src/lib/codename.ts`）。
 - `match.found` 的负载：`{conversationId, peer:{memberId,gender,age,province,tags,cleanMode}}`（**不含** nickname 与 avatarSeed；gender 为 secret 时输出 null，province 仅在对方公开时输出）。bot 兜底配对时 `peer` 用同一函数按 bot 身份的公开资料构造，字段集合与真人完全相同。
 - `msg.new.message.mediaUrl`：媒体消息（`kind=image|video`）才有，值为 `/api/media/<id>`；文本消息不带该字段。
@@ -182,19 +201,23 @@ V1：`unauthorized`、`verification_required`、`banned`、`rate_limited`、`con
 
 本包新增：`media_rejected`(415，媒体类型或大小不被接受)。
 
+外站媒体出站失败还会收到**无请求 ID**的 `error {code:"media_rejected",message:"对方站点暂不支持该媒体，发送失败"}`；现有统一 WS 错误提示处理该事件。文本出站失败只计数和记录日志，不推送此错误。
+
 V2 预留：`muted`、`captcha_required`。
 
 ## 匹配兼容规则（`internal/match`）
 
 兼容判定双向满足：① 未互相拉黑、最近聊过不在放宽窗口内；② `clean_mode` 相同；③ VIP 且 `match_gender≠any` 时要求对方 `gender` 精确匹配（保密性别不满足任何筛选）；④ VIP 且 `match_same_province` 时要求双方都设置且省份相同；⑤ 非 VIP 的 `match_gender`/`match_same_province` 一律视为 any/false；⑥ 硬条件（②–④）不随时间放宽。候选人选择：标签交集最大优先，交集相同选排队最久。
 
-兜底（全局设置打开且配置可用时）：排队 `match_fallback_seconds` 后仍无真人配对时，向 bot 引擎要一个候选
+未开启外站时，兜底（bot 全局设置打开且配置可用时）：排队 `match_fallback_seconds` 后仍无真人配对时，向 bot 引擎要一个候选
 （条件：`enabled`、`serve_match`、绑定了角色卡、双向无屏蔽、`Compatible`、未触发 bot 级限额、
 进行中匹配数 < `max_active_matches`；优先不在「最近聊过」里的 bot，再随机）。候选查询在匹配 goroutine
 之外执行，认领通过命令在匹配 goroutine 内原子完成；pending 期间条目仍可与真人配对（真人优先），
 已被真人配走或用户取消时放弃认领，没有可用 bot 时清除 pending 并等下一个间隔再试。
 兜底时间是动态的：`BotProvider.FallbackAfter()` 只读引擎内存里的生效配置，匹配 goroutine 内不访问数据库；
 后台改完设置后立即按新值判断到期（到期时间 = max(enqueuedAt + after, 上次失败后的重试时间)）。
+
+开启外站后，本地匹配始终优先；其他在线身份数低于 `onlineThreshold` 或达到 `localWaitSeconds` 时开始外站阶段，外站超时/失败后进入兜底并立即尝试 bot（仍受 bot 可用性与重试间隔约束），不再使用 bot「匹配时间」决定首次兜底时机。匹配结果与用户侧会话消息不增加 provider 或影子身份标识；对外仅发送随机外站昵称、性别及已设置的年龄，不发送本站昵称、IP 或省份。
 
 ## 可配置限流规则
 
