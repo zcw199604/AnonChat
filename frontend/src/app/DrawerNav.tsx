@@ -6,6 +6,7 @@ import { ResetIdentityConfirm } from '../components/ResetIdentityConfirm'
  * 抽屉条目（how.md 2.1）。产品只保留「匿名匹配」，因此只留首页与随机匹配；
  * 其余页面（/rooms、/bottles、/p/new、/stories、/vip）仍可通过地址直接访问。
  * 尚未接通的路由点击后提示「即将开放」。
+ * 当前未在 TopBar 中渲染（已隐藏）：☰ 抽屉入口已移除，组件与测试保留以便日后恢复。
  */
 const ITEMS: Array<{ to: string; label: string; icon: string; ready: boolean }> = [
   { to: '/', label: '首页', icon: '🏠', ready: true },

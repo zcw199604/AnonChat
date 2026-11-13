@@ -91,7 +91,7 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
   if (!ready || !me || !profile || !prefs) {
     // 资料尚未加载（或加载失败）时仍然渲染匹配按钮，保证主入口可用。
     return (
-      <Card className="flex h-full flex-col gap-5 p-5">
+      <Card className="flex h-full flex-col gap-4 p-4 sm:gap-5 sm:p-5">
         <div className="space-y-2">
           <Skeleton className="h-4 w-40" />
           <Skeleton className="h-3 w-24" />
@@ -100,7 +100,7 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
         <div className="mt-auto flex flex-col items-center gap-3">
           <div
             aria-hidden
-            className="flex h-40 w-40 items-center justify-center rounded-full"
+            className="flex h-32 w-32 items-center justify-center rounded-full sm:h-40 sm:w-40"
             style={{
               background:
                 'linear-gradient(135deg, color-mix(in srgb, var(--color-brand) 14%, transparent), color-mix(in srgb, var(--color-accent) 14%, transparent))',
@@ -110,7 +110,7 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
               type="button"
               data-testid="match-button"
               onClick={onMatch}
-              className="h-[152px] w-[152px] rounded-full text-lg font-semibold text-white transition duration-150 ease-out hover:opacity-95"
+              className="h-[120px] w-[120px] rounded-full text-lg font-semibold text-white transition duration-150 ease-out hover:opacity-95 sm:h-[152px] sm:w-[152px]"
               style={{ background: 'linear-gradient(135deg, var(--color-brand), var(--color-accent))' }}
             >
               匹配
@@ -125,7 +125,7 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
   const maskedCode = `${publicCode.slice(0, 2)}****${publicCode.slice(-4)}`
 
   return (
-    <Card className="flex h-full flex-col gap-5 p-5">
+    <Card className="flex h-full flex-col gap-4 p-4 sm:gap-5 sm:p-5">
       {/* 头像行：匿名编号、复制、分享、折叠 */}
       <div className="flex items-center gap-3">
         <GradientAvatar seed={me.avatarSeed || 'anonymous'} size={48} label={propNickname} />
@@ -230,7 +230,7 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
           {/* 标签 */}
           <div className="flex items-start gap-2">
             <span className="w-12 shrink-0 pt-1 text-xs text-lobby-sub">标签</span>
-            <TagPicker selected={profile.tags} onChange={(tags) => updateProfile({ tags })} />
+            <TagPicker collapsedCount={5} selected={profile.tags} onChange={(tags) => updateProfile({ tags })} />
           </div>
         </>
       )}
@@ -239,7 +239,7 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
       <div className="mt-auto flex flex-col items-center gap-3">
         <div
           aria-hidden
-          className="flex h-40 w-40 items-center justify-center rounded-full"
+          className="flex h-32 w-32 items-center justify-center rounded-full sm:h-40 sm:w-40"
           style={{
             background:
               'linear-gradient(135deg, color-mix(in srgb, var(--color-brand) 14%, transparent), color-mix(in srgb, var(--color-accent) 14%, transparent))',
@@ -249,7 +249,7 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
             type="button"
             data-testid="match-button"
             onClick={() => void handleMatch()}
-            className="h-[152px] w-[152px] rounded-full text-lg font-semibold text-white transition duration-150 ease-out hover:opacity-95"
+            className="h-[120px] w-[120px] rounded-full text-lg font-semibold text-white transition duration-150 ease-out hover:opacity-95 sm:h-[152px] sm:w-[152px]"
             style={{ background: 'linear-gradient(135deg, var(--color-brand), var(--color-accent))' }}
           >
             匹配

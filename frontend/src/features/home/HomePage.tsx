@@ -18,7 +18,7 @@ export default function HomePage() {
   }
 
   return (
-    <main className="relative mx-auto max-w-[1200px] px-4 py-8">
+    <main className="relative mx-auto max-w-[1200px] px-4 py-4 sm:py-8">
       <div className="grid grid-cols-12 gap-4 md:gap-5">
         {/* 广播窄横幅 + 资料/匹配大卡（居中限宽；移动端占满宽度） */}
         <div className="col-span-12 mx-auto flex w-full max-w-[720px] flex-col gap-3">
