@@ -3,7 +3,12 @@ import { marqueeNeedsScroll } from './marqueeScroll'
 
 interface MarqueeProps {
   items: string[]
+  /** 覆盖外层装饰样式（高度、背景、圆角、内边距、文字色）；不传时与公告条完全一致。 */
+  className?: string
 }
+
+/** 默认外层样式（公告条 AnnouncementBar 使用）。 */
+const DEFAULT_WRAPPER_CLASS = 'h-10 rounded-sm bg-brand/10 px-4 text-brand'
 
 /** 滚动速度：40px/s（how.md 1.4）。 */
 const SPEED_PX_PER_S = 40
@@ -12,7 +17,7 @@ const SPEED_PX_PER_S = 40
  * 公告跑马灯：CSS transform 匀速滚动，hover 时暂停；
  * 只有一条且放得下时不滚动。
  */
-export function Marquee({ items }: MarqueeProps) {
+export function Marquee({ items, className }: MarqueeProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
   const [scroll, setScroll] = useState(false)
@@ -41,7 +46,7 @@ export function Marquee({ items }: MarqueeProps) {
     <div
       ref={wrapRef}
       data-testid="marquee"
-      className="group flex h-10 items-center overflow-hidden rounded-sm bg-brand/10 px-4 text-sm text-brand"
+      className={`group flex items-center overflow-hidden text-sm ${className ?? DEFAULT_WRAPPER_CLASS}`}
     >
       <div
         ref={innerRef}

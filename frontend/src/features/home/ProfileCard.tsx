@@ -10,7 +10,6 @@ import { ResetIdentityConfirm } from '../../components/ResetIdentityConfirm'
 import { useIdentityStore } from '../../stores/identity'
 import { useUiStore } from '../../stores/ui'
 import { errorMessage } from '../../lib/api/errorMessages'
-import { setNickname, shuffleNickname } from '../../lib/api/client'
 import type { Gender, ProfileInfo } from '../../lib/api/client'
 import { useProfileSaver } from './useProfileSaver'
 import { MAX_AGE, MIN_AGE, PROVINCES } from '../../lib/profileConsts'
@@ -23,7 +22,7 @@ interface ProfileCardProps {
   nickname: string
 }
 
-/** 资料卡 + 匹配大卡（how.md 2.2）：接通 me、PATCH profile、昵称接口。 */
+/** 资料卡 + 匹配大卡（how.md 2.2）：接通 me 与 PATCH profile（昵称与 VIP 徽标已移除）。 */
 export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProps) {
   const me = useIdentityStore((s) => s.me)
   const publicCode = useIdentityStore((s) => s.publicCode)
@@ -36,15 +35,10 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
       return false
     }
   })
-  // nicknameEdit 为 null 时使用服务端昵称，避免用 effect 同步 prop。
-  const [nicknameEdit, setNicknameEdit] = useState<string | null>(null)
-  const [editingNickname, setEditingNickname] = useState(false)
   const saver = useProfileSaver(me, (code) => setToast(errorMessage(code)))
 
   const profile = saver.profile
   const prefs = saver.prefs
-  const vipActive = Boolean(me?.vip.active)
-  const nickname = nicknameEdit ?? propNickname
 
   async function handleMatch() {
     await saver.flush()
@@ -92,28 +86,6 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
     }
   }
 
-  async function doShuffle() {
-    try {
-      const updated = await shuffleNickname()
-      useIdentityStore.setState({ me: updated })
-      setNicknameEdit(null)
-    } catch (e) {
-      setToast(errorMessage((e as { code?: string }).code))
-    }
-  }
-
-  async function submitNickname() {
-    try {
-      const updated = await setNickname(nickname)
-      useIdentityStore.setState({ me: updated })
-      setNicknameEdit(null)
-      setEditingNickname(false)
-      setToast('昵称已更新')
-    } catch (e) {
-      setToast(errorMessage((e as { code?: string }).code))
-    }
-  }
-
   const ready = Boolean(me && profile && prefs)
 
   if (!ready || !me || !profile || !prefs) {
@@ -154,9 +126,9 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
 
   return (
     <Card className="flex h-full flex-col gap-5 p-5">
-      {/* 头像行：匿名编号、复制、分享、随机昵称、折叠 */}
+      {/* 头像行：匿名编号、复制、分享、折叠 */}
       <div className="flex items-center gap-3">
-        <GradientAvatar seed={me.avatarSeed || 'anonymous'} size={48} label={nickname} />
+        <GradientAvatar seed={me.avatarSeed || 'anonymous'} size={48} label={propNickname} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="font-mono text-sm text-lobby-ink">{maskedCode || '—'}</span>
@@ -177,11 +149,6 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
               ⤴
             </button>
           </div>
-          {vipActive && me.vip.until && (
-            <span className="mt-1 inline-block rounded-full bg-brand/15 px-2 py-0.5 text-[11px] text-brand">
-              VIP 至 {me.vip.until.slice(0, 10)}
-            </span>
-          )}
         </div>
         <ResetIdentityConfirm className="rounded-sm px-1 text-sm text-lobby-sub transition duration-150 ease-out hover:text-brand" label="🔄" ariaLabel="换个身份" />
         <button
@@ -196,52 +163,6 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
 
       {!collapsed && (
         <>
-          {/* 昵称 */}
-          <div className="flex items-center gap-2">
-            <span className="w-12 text-xs text-lobby-sub">昵称</span>
-            {editingNickname ? (
-              <>
-                <input
-                  aria-label="昵称"
-                  className="flex-1 rounded-sm border border-lobby-line bg-lobby-bg px-2 py-1 text-sm text-lobby-ink"
-                  maxLength={12}
-                  value={nickname}
-                  onChange={(e) => setNicknameEdit(e.target.value)}
-                />
-                <button
-                  type="button"
-                  className="rounded-sm bg-brand px-2 py-1 text-xs text-white"
-                  onClick={submitNickname}
-                >
-                  保存
-                </button>
-              </>
-            ) : (
-              <>
-                <span className="flex-1 text-sm text-lobby-ink">{nickname}</span>
-                <button
-                  type="button"
-                  aria-label="随机昵称"
-                  onClick={doShuffle}
-                  className="rounded-sm px-1 text-sm text-lobby-sub transition duration-150 ease-out hover:text-brand"
-                >
-                  🔀
-                </button>
-                <button
-                  type="button"
-                  aria-label="编辑昵称"
-                  onClick={() => {
-                    setNicknameEdit(propNickname)
-                    setEditingNickname(true)
-                  }}
-                  className="rounded-sm px-1 text-sm text-lobby-sub transition duration-150 ease-out hover:text-brand"
-                >
-                  ✎
-                </button>
-              </>
-            )}
-          </div>
-
           {/* 性别 */}
           <div className="flex items-center gap-2">
             <span className="w-12 shrink-0 text-xs text-lobby-sub">性别</span>

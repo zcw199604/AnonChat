@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { loginAdmin, openHome, redeemVip } from './helpers'
 
-test('I 广播：提交 → 管理员审核通过 → 首页可见', async ({ browser }) => {
+test('I 广播：提交 → 管理员审核通过 → 首页横幅可见', async ({ browser }) => {
   const user = await openHome(browser)
 
   // 兑换激活码拿到广播卡。
@@ -22,11 +22,12 @@ test('I 广播：提交 → 管理员审核通过 → 首页可见', async ({ br
   await row.getByRole('button', { name: '通过' }).click()
   await expect(admin.getByText('已通过，展示 24 小时')).toBeVisible({ timeout: 20000 })
 
-  // 首页广播卡可见。
+  // 回到首页：广播应以窄横幅形式展示通过审核的内容。
   await user.goto('/')
   await expect(user.getByTestId('ws-connected')).toBeVisible({ timeout: 30000 })
-  // 首页广播卡会出现这条广播。
-  await expect(user.getByText(content).first()).toBeVisible({ timeout: 20000 })
+  await expect(user.getByTestId('broadcast-banner').getByText(content).first()).toBeVisible({
+    timeout: 20000,
+  })
 
   await user.context().close()
   await admin.context().close()

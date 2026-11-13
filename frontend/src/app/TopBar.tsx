@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { Drawer } from '../components/Drawer'
 import { Sheet } from '../components/Sheet'
 import { useUiStore } from '../stores/ui'
@@ -8,7 +7,8 @@ import { useRouteTheme } from './useRouteTheme'
 import { DrawerNav } from './DrawerNav'
 
 /**
- * 顶栏（how.md 2.1）：☰ 打开抽屉，中间是品牌名，右侧是邀请好友、添加到主屏幕、明暗切换。
+ * 顶栏（how.md 2.1）：☰ 打开抽屉，中间是品牌名（首页 h1），
+ * 右侧是连接状态圆点、添加到主屏幕、明暗切换。
  * 公告跑马灯由 AnnouncementBar 渲染在顶栏下方（U4 接通数据）。
  */
 export function TopBar() {
@@ -58,18 +58,19 @@ export function TopBar() {
           </div>
 
           <div className="text-center">
-            <div className="text-[15px] font-bold tracking-tight text-lobby-ink">AnonChat 匿名聊天</div>
+            <h1 className="text-[15px] font-bold tracking-tight text-lobby-ink">AnonChat 匿名聊天</h1>
             <div className="text-[10px] tracking-[0.2em] text-lobby-sub">ANONYMOUS CHAT</div>
           </div>
 
           <div className="flex items-center gap-1">
-            <Link
-              to="/p/new"
-              aria-label="邀请好友"
-              className="rounded-sm px-2 py-1 text-base transition duration-150 ease-out hover:bg-lobby-bg"
-            >
-              👤+
-            </Link>
+            {/* E2E 就绪信号：仅在 WS 已连接时出现 data-testid="ws-connected"。 */}
+            <span className="flex items-center px-1">
+              {connected ? (
+                <span data-testid="ws-connected" aria-label="已连接" className="h-2 w-2 rounded-full bg-brand" />
+              ) : (
+                <span aria-label="连接中" className="h-2 w-2 rounded-full bg-lobby-line" />
+              )}
+            </span>
             <button
               type="button"
               aria-label="添加到主屏幕"

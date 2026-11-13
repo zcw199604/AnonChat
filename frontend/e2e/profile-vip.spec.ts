@@ -25,7 +25,7 @@ test('F 资料保存后刷新仍然保留', async ({ browser }) => {
   await page.context().close()
 })
 
-test('G 兑换激活码后首页显示 VIP 徽标', async ({ browser }) => {
+test('G 兑换激活码后 VIP 状态只在 /vip 页面展示，首页不再显示 VIP 徽标', async ({ browser }) => {
   const page = await openHome(browser)
 
   // 兑换前：首页已没有 VipLock（匹配偏好区块已移除），也不显示 VIP 徽标。
@@ -33,13 +33,15 @@ test('G 兑换激活码后首页显示 VIP 徽标', async ({ browser }) => {
   await expect(page.getByText(/VIP 至 \d{4}-\d{2}-\d{2}/)).toHaveCount(0)
 
   await redeemVip(page)
+  // 兑换后停留在 /vip：状态卡显示生效中与有效期。
   await expect(page.getByText('VIP 生效中')).toBeVisible({ timeout: 20000 })
+  await expect(page.getByText(/有效期至 \d{4}-\d{2}-\d{2}/)).toBeVisible({ timeout: 20000 })
 
   await page.goto('/')
   await expect(page.getByTestId('ws-connected')).toBeVisible({ timeout: 30000 })
+  // 回到首页：VIP 徽标与 VipLock 都不再出现（资料卡的 VIP 徽标已移除）。
+  await expect(page.getByText(/VIP 至 \d{4}-\d{2}-\d{2}/)).toHaveCount(0)
   await expect(page.getByTestId('vip-lock')).toHaveCount(0)
-  // VIP 徽标出现。
-  await expect(page.getByText(/VIP 至 \d{4}-\d{2}-\d{2}/)).toBeVisible()
 
   await page.context().close()
 })

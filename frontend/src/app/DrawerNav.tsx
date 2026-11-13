@@ -2,15 +2,14 @@ import { Link } from 'react-router-dom'
 import { useUiStore } from '../stores/ui'
 import { ResetIdentityConfirm } from '../components/ResetIdentityConfirm'
 
-/** 抽屉条目（how.md 2.1）。尚未接通的路由点击后提示「即将开放」。 */
+/**
+ * 抽屉条目（how.md 2.1）。产品只保留「匿名匹配」，因此只留首页与随机匹配；
+ * 其余页面（/rooms、/bottles、/p/new、/stories、/vip）仍可通过地址直接访问。
+ * 尚未接通的路由点击后提示「即将开放」。
+ */
 const ITEMS: Array<{ to: string; label: string; icon: string; ready: boolean }> = [
   { to: '/', label: '首页', icon: '🏠', ready: true },
   { to: '/match', label: '随机匹配', icon: '🎲', ready: true },
-  { to: '/rooms', label: '话题房间', icon: '💬', ready: true },
-  { to: '/bottles', label: '匿名信', icon: '✉️', ready: true },
-  { to: '/p/new', label: '私密链接', icon: '🔗', ready: true },
-  { to: '/stories', label: '故事书（公测）', icon: '📖', ready: true },
-  { to: '/vip', label: 'VIP 与激活码', icon: '✨', ready: true },
 ]
 
 interface DrawerNavProps {
