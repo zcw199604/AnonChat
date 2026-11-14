@@ -2,6 +2,7 @@ package identity
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +47,27 @@ func TestGenerateAvatarSeed(t *testing.T) {
 	}
 	if GenerateAvatarSeed() == seed {
 		t.Error("两次生成的 avatarSeed 相同，随机性不足")
+	}
+}
+
+// plainNicknamePattern 校验无编号昵称格式：形容词+的+动物。
+var plainNicknamePattern = regexp.MustCompile(`^[\p{Han}]+的[\p{Han}]+$`)
+
+func TestGeneratePlainNicknameFormat(t *testing.T) {
+	hasDigit := regexp.MustCompile(`[0-9]`)
+	for i := 0; i < 200; i++ {
+		n := GeneratePlainNickname()
+		if !plainNicknamePattern.MatchString(n) {
+			t.Fatalf("无编号昵称 %q 不符合格式", n)
+		}
+		if hasDigit.MatchString(n) {
+			t.Fatalf("无编号昵称 %q 含数字", n)
+		}
+		if strings.Contains(n, "#") {
+			t.Fatalf("无编号昵称 %q 含 #", n)
+		}
+		if !strings.Contains(n, "的") {
+			t.Fatalf("无编号昵称 %q 不含「的」", n)
+		}
 	}
 }

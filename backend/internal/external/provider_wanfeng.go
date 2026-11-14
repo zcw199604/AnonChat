@@ -42,10 +42,10 @@ func (p *wanfengProvider) open(ctx context.Context, l *link) (session, error) {
 	}
 	nickname := ""
 	if binding != nil {
-		nickname = binding.Nickname
+		nickname = externalNickname(binding.Nickname)
 	}
 	if nickname == "" {
-		nickname = identity.GenerateNickname()
+		nickname = identity.GeneratePlainNickname()
 	}
 	profile := wanfeng.Profile{Nickname: nickname, Gender: l.req.Context.Profile.Gender}
 	if age := l.req.Context.Profile.Age; age != nil {

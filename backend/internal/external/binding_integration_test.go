@@ -43,8 +43,11 @@ func TestExternalAccountBindingPersistence(t *testing.T) {
 	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(first.RemoteUid) {
 		t.Fatalf("chat2019 UID 格式错误: %q", first.RemoteUid)
 	}
-	if !regexp.MustCompile(`^[\p{Han}]+的[\p{Han}]+#\d{4}$`).MatchString(first.Nickname) {
-		t.Fatalf("chat2019 未使用随机昵称: %q", first.Nickname)
+	if !regexp.MustCompile(`^[\p{Han}]+的[\p{Han}]+$`).MatchString(first.Nickname) {
+		t.Fatalf("chat2019 未使用无数字的随机昵称: %q", first.Nickname)
+	}
+	if regexp.MustCompile(`[0-9]`).MatchString(first.Nickname) {
+		t.Fatalf("chat2019 昵称含数字，外站会拒绝: %q", first.Nickname)
 	}
 	if first.IdentityTokenEnc != nil {
 		t.Fatal("chat2019 不应保存token")

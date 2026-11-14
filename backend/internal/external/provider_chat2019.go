@@ -28,7 +28,7 @@ func (p *chat2019Provider) open(ctx context.Context, l *link) (session, error) {
 	if l.req.Context.Profile.Gender == "female" {
 		sex = "女"
 	}
-	self := chat2019.Self{UID: binding.RemoteUid, Nickname: binding.Nickname, Sex: sex}
+	self := chat2019.Self{UID: binding.RemoteUid, Nickname: externalNickname(binding.Nickname), Sex: sex}
 	conn, err := chat2019.Dial(ctx, p.b.deps.Chat2019, self, func(f map[string]any) { p.b.emitFrame(l, f) }, func(expected bool, err error) {
 		if !expected {
 			p.b.connectionLost(l, err)

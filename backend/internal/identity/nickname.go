@@ -31,6 +31,14 @@ func GenerateNickname() string {
 	return fmt.Sprintf("%s的%s#%d", adj, animal, num)
 }
 
+// GeneratePlainNickname 生成形如“迷路的水獭”的随机昵称：不带“#”与编号。
+// 供会拒绝含过多数字昵称的外站（chat2019、晚风）使用。
+func GeneratePlainNickname() string {
+	adj := adjectives[randIntN(len(adjectives))]
+	animal := animals[randIntN(len(animals))]
+	return fmt.Sprintf("%s的%s", adj, animal)
+}
+
 // GenerateAvatarSeed 生成 16 字节随机数的十六进制字符串（32 字符）。
 func GenerateAvatarSeed() string {
 	b := make([]byte, 16)
