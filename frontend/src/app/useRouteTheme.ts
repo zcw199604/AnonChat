@@ -15,7 +15,7 @@ const CHAT_PATTERNS: RegExp[] = [
   /^\/stories\/[^/]+\/play$/,
 ]
 
-/** /p/:token 只有在进入会话后才使用暗色。 */
+/** /p/:token 只有在进入会话后才隐藏大厅顶栏。 */
 const PRIVATE_PATTERN = /^\/p\/[^/]+$/
 
 /** 是否为聊天类路由（决定是否显示大厅顶栏）。 */
@@ -26,16 +26,12 @@ export function isChatRoute(pathname: string, inPrivateConversation = false): bo
 
 /**
  * 判定当前路由应使用的主题（纯函数，便于单测）。
- * inPrivateConversation 表示 /p/:token 页面是否已经进入会话。
  */
 export function routeTheme(
   pathname: string,
   lobbyPref: Theme,
-  inPrivateConversation = false,
 ): Theme {
   if (pathname.startsWith('/admin')) return 'light'
-  if (CHAT_PATTERNS.some((re) => re.test(pathname))) return 'dark'
-  if (PRIVATE_PATTERN.test(pathname) && inPrivateConversation) return 'dark'
   return lobbyPref
 }
 
@@ -47,10 +43,9 @@ export function useRouteTheme(): {
 } {
   const { pathname } = useLocation()
   const lobbyPref = useUiStore((s) => s.lobbyTheme)
-  const inPrivateConversation = useUiStore((s) => s.inPrivateConversation)
   const setLobbyTheme = useUiStore((s) => s.setLobbyTheme)
 
-  const theme = routeTheme(pathname, lobbyPref, inPrivateConversation)
+  const theme = routeTheme(pathname, lobbyPref)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme

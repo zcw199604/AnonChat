@@ -15,6 +15,7 @@ test('E 举报与封禁：举报消息、管理员封禁、被踢出且刷新后
   await expect(b.getByText(abuse)).toBeVisible({ timeout: 20000 })
 
   // 乙举报甲的消息
+  await b.getByRole('button', { name: '更多操作' }).click()
   await b.getByRole('button', { name: '举报' }).click()
   const dialog = b.getByRole('dialog', { name: '举报' })
   await dialog.getByRole('checkbox').first().check()

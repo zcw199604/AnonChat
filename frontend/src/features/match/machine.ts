@@ -36,6 +36,7 @@ export interface MatchState {
 }
 
 export type MatchAction =
+  | { type: 'restore'; state: MatchState }
   | { type: 'start' }
   | { type: 'cancel' }
   | { type: 'found'; conversationId: string; peer: MatchPeer }
@@ -50,6 +51,8 @@ export const initialMatchState: MatchState = { status: 'idle' }
 
 export function matchReducer(state: MatchState, action: MatchAction): MatchState {
   switch (action.type) {
+    case 'restore':
+      return action.state
     case 'start':
       return { status: 'waiting', filters: state.filters }
     case 'cancel':
@@ -104,14 +107,21 @@ export function filterChips(filters?: MatchFilters): string[] {
   return out
 }
 
-/** 对方的公开资料芯片文案。 */
-export function peerChips(peer?: MatchPeer): string[] {
+export function peerSummary(peer?: MatchPeer): string[] {
   if (!peer) return []
   const out: string[] = []
-  if (peer.gender === 'female') out.push('♀')
-  if (peer.gender === 'male') out.push('♂')
-  if (typeof peer.age === 'number') out.push(`${peer.age}`)
+  if (peer.gender === 'female') out.push('女')
+  if (peer.gender === 'male') out.push('男')
+  if (typeof peer.age === 'number') out.push(String(peer.age))
   if (peer.province) out.push(peer.province)
-  for (const tag of peer.tags ?? []) out.push(`#${tag}`)
   return out
+}
+
+export function commonTags(peerTags: string[], myTags: string[]): string[] {
+  return peerTags.filter((tag) => myTags.includes(tag))
+}
+
+export function icebreakers(peerTags: string[], myTags: string[]): string[] {
+  const tag = commonTags(peerTags, myTags)[0] ?? peerTags[0]
+  return ['嗨，你好呀', tag ? `你也喜欢${tag}吗？` : '在忙什么呢', '最近有什么开心的事吗']
 }

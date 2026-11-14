@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchReducer, initialMatchState, endReasonText } from './machine'
+import { matchReducer, initialMatchState, endReasonText, peerSummary, commonTags, icebreakers } from './machine'
 
 describe('matchReducer', () => {
   it('开始匹配进入等待中', () => {
@@ -56,5 +56,24 @@ describe('endReasonText', () => {
   it('未知原因使用通用文案', () => {
     expect(endReasonText('whatever')).toBe('会话已结束')
     expect(endReasonText(undefined)).toBe('会话已结束')
+  })
+})
+
+describe('对方资料与破冰语', () => {
+  it('摘要映射性别并跳过缺失字段', () => {
+    expect(peerSummary({ memberId: 2, gender: 'female', age: 23, province: '广东' })).toEqual(['女', '23', '广东'])
+    expect(peerSummary({ memberId: 2, gender: 'male' })).toEqual(['男'])
+    expect(peerSummary({ memberId: 2, gender: null, age: null, province: null })).toEqual([])
+    expect(peerSummary()).toEqual([])
+  })
+  it('共同标签保持对方顺序，破冰语优先共同标签', () => {
+    expect(commonTags(['电影', '音乐', '旅行'], ['旅行', '音乐'])).toEqual(['音乐', '旅行'])
+    expect(icebreakers(['电影', '音乐'], ['音乐'])).toEqual(['嗨，你好呀', '你也喜欢音乐吗？', '最近有什么开心的事吗'])
+    expect(icebreakers(['电影'], [])).toEqual(['嗨，你好呀', '你也喜欢电影吗？', '最近有什么开心的事吗'])
+    expect(icebreakers([], [])).toEqual(['嗨，你好呀', '在忙什么呢', '最近有什么开心的事吗'])
+  })
+  it('restore 恢复 ended 的完整快照', () => {
+    const before = { status: 'ended' as const, conversationId: 'old', endReason: 'peer_left', peer: { memberId: 2 } }
+    expect(matchReducer({ status: 'waiting' }, { type: 'restore', state: before })).toEqual(before)
   })
 })

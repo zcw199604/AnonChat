@@ -30,8 +30,7 @@ import WorkPage from '../features/stories/WorkPage'
 const AdminPage = lazy(() => import('../features/admin/AdminPage'))
 
 /**
- * 两层固定定位背景：浅色层始终存在，暗色层按路由切换 opacity（300ms ease-out）。
- * 从大厅进入聊天页时由浅变暗。
+ * 两层固定定位背景：浅色层始终存在，暗色层按主题切换 opacity（300ms ease-out）。
  */
 function BackgroundLayers() {
   const { theme } = useRouteTheme()

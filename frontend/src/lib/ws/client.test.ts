@@ -37,6 +37,20 @@ describe('WsClient', () => {
     return { fake, resume, client }
   }
 
+  it('send 返回发出的帧 id，同 id 的 error 在第二参数 envelope 中传回', () => {
+    const { fake, client } = setup()
+    const onError = vi.fn()
+    client.on('error', onError)
+    client.connect()
+    fake.latest().open()
+    const id = client.send('match.start', {})
+    expect(id).toEqual(expect.any(String))
+    expect(fake.latest().sent[0]).toMatchObject({ t: 'match.start', id })
+    fake.latest().message({ t: 'error', id, d: { code: 'rate_limited' } })
+    expect(onError).toHaveBeenCalledWith({ code: 'rate_limited' }, expect.objectContaining({ t: 'error', id }))
+    client.close()
+  })
+
   it('媒体首次发送与重试均保留 kind/mediaId，文本仍为 text', async () => {
     const { fake, client } = setup()
     client.connect()

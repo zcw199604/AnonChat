@@ -147,7 +147,7 @@ export default function StoryPlayPage() {
   }
 
   return (
-    <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
+    <main className="mx-auto flex h-[100dvh] max-w-[760px] flex-col p-0 md:p-4">
       <GlassPanel className="h-full rounded-none md:rounded-panel">
         <header className="flex items-center justify-between gap-2 border-b border-glass-line px-4 py-3">
           <div className="min-w-0">
@@ -172,6 +172,7 @@ export default function StoryPlayPage() {
         {story.status === 'active' && conversationId ? (
           <>
             <MessageList
+              conversationKey={conversationId}
               messages={chat.messages}
               selfMemberId={chat.myMemberId}
               typing={chat.typing}

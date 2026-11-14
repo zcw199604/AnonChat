@@ -13,7 +13,7 @@ import { Composer } from '../../components/Composer'
 import { GlassPanel } from '../../components/GlassPanel'
 import { Card } from '../../components/Card'
 
-/** 私密链接会话：进入会话后切换为暗色玻璃（how.md 1.3）。 */
+/** 私密链接会话：主题跟随用户偏好，进入会话后隐藏大厅顶栏。 */
 export default function PrivateJoinPage() {
   const { token } = useParams()
   const nav = useNavigate()
@@ -30,7 +30,7 @@ export default function PrivateJoinPage() {
 
   const chat = useChat(conversationId)
 
-  // 进入会话后主题切暗色，离开时恢复。
+  // 进入会话后隐藏大厅顶栏，离开时恢复。
   useEffect(() => {
     setInPrivateConversation(Boolean(conversationId))
     return () => setInPrivateConversation(false)
@@ -125,7 +125,7 @@ export default function PrivateJoinPage() {
       ''
     const name = peerNickname || '对方'
     return (
-      <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
+      <main className="mx-auto flex h-[100dvh] max-w-[760px] flex-col p-0 md:p-4">
         <GlassPanel className="h-full rounded-none md:rounded-panel">
           <header className="flex items-center justify-between gap-2 border-b border-glass-line px-4 py-3">
             <span className="text-sm font-medium text-night-ink">{name}</span>
@@ -143,6 +143,8 @@ export default function PrivateJoinPage() {
             </p>
           )}
           <MessageList
+            conversationKey={conversationId}
+            showSender={false}
             messages={chat.messages}
             selfMemberId={chat.myMemberId}
             typing={chat.typing}
@@ -151,11 +153,11 @@ export default function PrivateJoinPage() {
         </GlassPanel>
         {confirmDestroy && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--c-scrim)] p-4"
             role="dialog"
             aria-label="销毁确认"
           >
-            <div className="w-full max-w-sm rounded-panel bg-lobby-card p-5 shadow-soft">
+            <div className="w-full max-w-sm rounded-panel bg-sheet p-5 shadow-soft">
               <p className="mb-4 text-sm text-lobby-ink">销毁后双方都无法再查看，确定销毁吗？</p>
               <div className="flex justify-end gap-2">
                 <button

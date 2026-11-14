@@ -18,6 +18,7 @@ export async function startMatch(page: Page): Promise<void> {
 }
 
 export async function sendChat(page: Page, text: string): Promise<void> {
+  await expect(page.getByRole('button', { name: '进入聊天' })).toBeHidden({ timeout: 5000 })
   const input = page.getByLabel('消息输入框')
   await input.fill(text)
   await input.press('Enter')

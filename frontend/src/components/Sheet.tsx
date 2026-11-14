@@ -25,14 +25,14 @@ export function Sheet({ open, title, onClose, children }: SheetProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--c-scrim)] p-0 sm:items-center sm:p-4"
       role="dialog"
       aria-modal="true"
       aria-label={title}
       onClick={onClose}
     >
       <div
-        className="animate-fade-up w-full max-w-md rounded-t-panel bg-lobby-card p-5 shadow-soft sm:rounded-panel"
+        className="animate-fade-up w-full max-w-md rounded-t-panel bg-sheet p-5 shadow-soft sm:rounded-panel"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between">

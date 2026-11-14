@@ -4,14 +4,17 @@ export type Theme = 'light' | 'dark'
 /** 大厅明暗偏好的 localStorage 键。 */
 export const THEME_STORAGE_KEY = 'anonchat.theme'
 
-/** 读取大厅明暗偏好（默认浅色）。 */
+/** 读取明暗偏好；未设置时跟随系统，不支持系统主题时使用浅色。 */
 export function readLobbyTheme(): Theme {
   try {
     const v = localStorage.getItem(THEME_STORAGE_KEY)
-    return v === 'dark' ? 'dark' : 'light'
+    if (v === 'light' || v === 'dark') return v
   } catch {
-    return 'light'
+    // 无法读取存储时仍可跟随系统主题。
   }
+  return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light'
 }
 
 /** 保存大厅明暗偏好。 */

@@ -1,337 +1,260 @@
-import { useEffect, useReducer, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { getWsClient } from '../../lib/ws'
 import { useUiStore } from '../../stores/ui'
+import { useIdentityStore } from '../../stores/identity'
 import { errorMessage } from '../../lib/api/errorMessages'
-import { blockConversation, createReport } from '../../lib/api/client'
-import { matchReducer, initialMatchState, endReasonText, filterChips, peerChips } from './machine'
-import type { MatchPeer, MatchFilters } from './machine'
+import { blockConversation, createReport, uploadMedia } from '../../lib/api/client'
+import { matchReducer, initialMatchState, endReasonText, commonTags, icebreakers, peerSummary } from './machine'
+import type { MatchAction, MatchState, MatchPeer, MatchFilters } from './machine'
 import { useChat } from '../../lib/useChat'
 import { MessageList } from '../../components/MessageList'
+import { Icon } from '../../components/Icon'
 import { Composer } from '../../components/Composer'
 import { GlassPanel } from '../../components/GlassPanel'
 import { GradientAvatar } from '../../components/GradientAvatar'
 import { BlockConfirm } from '../../components/BlockConfirm'
 import { ReportDialog } from '../../components/ReportDialog'
-import { WaitingOrb } from './WaitingOrb'
-
-/** 排队满 30 秒且有硬条件时给出放宽建议（how.md 2.3）。 */
-const RELAX_HINT_SECONDS = 30
+import { Sheet } from '../../components/Sheet'
+import { SearchingView } from './SearchingView'
+import { FoundOverlay, MatchReminder } from './FoundOverlay'
+import { NextButton } from './NextButton'
 
 export default function MatchPage() {
   const ws = getWsClient()
   const nav = useNavigate()
-  const [params] = useSearchParams()
+  const [params, setParams] = useSearchParams()
+  const auto = params.get('auto') === '1'
   const setToast = useUiStore((s) => s.setToast)
-  const [state, dispatch] = useReducer(matchReducer, initialMatchState)
-  const chat = useChat(state.conversationId ?? null)
-  const selfMemberId = chat.myMemberId
-  const peer = state.peer
-
+  const nickname = useIdentityStore((s) => s.nickname)
+  const avatarSeed = useIdentityStore((s) => s.avatarSeed)
+  const me = useIdentityStore((s) => s.me)
+  const myTags = me?.profile.tags ?? []
+  // auto 首次渲染即为 waiting；失败快照仍是发起请求前的 idle。
+  const [state, dispatch] = useReducer(matchReducer, { ...initialMatchState, status: auto ? 'waiting' : 'idle' })
+  const stateRef = useRef(state)
+  const apply = useCallback((action: MatchAction) => {
+    stateRef.current = matchReducer(stateRef.current, action)
+    dispatch(action)
+  }, [])
+  const beforeStart = useRef<MatchState>(initialMatchState)
+  const pendingStartId = useRef<string | null>(null)
+  const pendingNextId = useRef<string | null>(null)
+  const autoStartedRef = useRef(false)
+  const mountedRef = useRef(false)
+  const [foundId, setFoundId] = useState<string | null>(null)
+  const [overlayId, setOverlayId] = useState<string | null>(null)
+  const [nextReset, setNextReset] = useState(0)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [endOpen, setEndOpen] = useState(false)
   const [blockOpen, setBlockOpen] = useState(false)
   const [reportOpen, setReportOpen] = useState(false)
-  const [elapsed, setElapsed] = useState(0)
+  const chat = useChat(state.conversationId ?? null)
+  const peer: MatchPeer | undefined = state.peer ?? chat.peer
+  const name = peer?.nickname?.trim() || '对方'
+  const seed = peer?.avatarSeed || 'anonymous'
+  const summary = peerSummary(peer)
+  const demographics = peerSummary(peer && { ...peer, province: null }).join(' · ')
+  const cardChips = [demographics, peer?.province].filter(Boolean)
+  const common = commonTags(peer?.tags ?? [], myTags)
+  const chatting = state.status === 'chatting'
+  const overlayOpen = chatting && overlayId === state.conversationId
+  const closeOverlay = useCallback(() => setOverlayId(null), [])
 
-  const statusRef = useRef(state.status)
-  useEffect(() => {
-    statusRef.current = state.status
-  }, [state.status])
+  const startMatch = useCallback((snapshot?: MatchState) => {
+    beforeStart.current = snapshot ?? stateRef.current
+    apply({ type: 'start' })
+    pendingNextId.current = null
+    pendingStartId.current = ws.send('match.start', {})
+  }, [apply, ws])
 
   useEffect(() => {
+    function clearFound() { setFoundId(null); setOverlayId(null) }
+    function clearPending() { pendingStartId.current = null; pendingNextId.current = null }
     const offs = [
-      ws.on('match.waiting', (d) => {
-        const x = d as { filters?: MatchFilters } | undefined
-        if (x?.filters) dispatch({ type: 'filters', filters: x.filters })
-        dispatch({ type: 'start' })
+      ws.on('match.waiting', (data) => {
+        const x = data as { filters?: MatchFilters } | undefined
+        clearFound()
+        if (x?.filters) apply({ type: 'filters', filters: x.filters })
+        apply({ type: 'start' })
+        // waiting 先于真正入队，保留请求 id 以接收随后同 id 的入队错误。
       }),
-      ws.on('match.found', (d) => {
-        const x = d as { conversationId: string; peer: MatchPeer }
+      ws.on('match.found', (data) => {
+        const x = data as { conversationId: string; peer: MatchPeer }
+        clearPending()
         ws.subscribeConversation(x.conversationId)
-        dispatch({
-          type: 'found',
-          conversationId: x.conversationId,
-          peer: x.peer,
-        })
+        apply({ type: 'found', conversationId: x.conversationId, peer: x.peer })
+        setFoundId(x.conversationId); setOverlayId(x.conversationId)
+        setMenuOpen(false); setEndOpen(false); setBlockOpen(false); setReportOpen(false)
       }),
-      ws.on('match.ended', (d) => {
-        const x = d as { reason: string }
-        dispatch({ type: 'ended', reason: x.reason })
+      ...['match.ended', 'conv.ended'].map((type) => ws.on(type, (data) => {
+        const x = data as { conversationId?: string; reason: string }
+        if (x.conversationId && x.conversationId !== stateRef.current.conversationId) return
+        // next 会先结束旧会话再入队，必须保留 pendingNextId 直到后续 waiting/error。
+        pendingStartId.current = null
+        clearFound()
+        apply({ type: 'ended', reason: x.reason })
+      })),
+      ws.on('hello', (data) => {
+        const x = data as { resumable?: string[] }
+        if (!x.resumable?.length) return
+        clearPending(); clearFound()
+        ws.subscribeConversation(x.resumable[0])
+        apply({ type: 'resume', conversationId: x.resumable[0] })
       }),
-      ws.on('conv.ended', (d) => {
-        const x = d as { reason: string }
-        dispatch({ type: 'ended', reason: x.reason })
-      }),
-      ws.on('hello', (d) => {
-        const x = d as { resumable?: string[] }
-        if (x.resumable && x.resumable.length > 0) {
-          ws.subscribeConversation(x.resumable[0])
-          dispatch({ type: 'resume', conversationId: x.resumable[0] })
+      ws.on('error', (_data, env) => {
+        if (env.id && env.id === pendingStartId.current && stateRef.current.status === 'waiting') {
+          pendingStartId.current = null
+          apply({ type: 'restore', state: beforeStart.current })
+        } else if (env.id && env.id === pendingNextId.current) {
+          pendingNextId.current = null
+          if (stateRef.current.status === 'waiting') apply({ type: 'cancel' })
+          else if (stateRef.current.status === 'chatting') setNextReset((value) => value + 1)
         }
       }),
     ]
-    return () => offs.forEach((f) => f())
-  }, [ws])
+    return () => offs.forEach((off) => off())
+  }, [ws, apply])
 
-  // 卸载时若仍在排队则取消排队；聊天中保留会话（依赖服务端宽限期）。
   useEffect(() => {
+    mountedRef.current = true
     return () => {
-      if (statusRef.current === 'waiting') ws.send('match.cancel', {})
+      mountedRef.current = false
+      // StrictMode 的下一次 setup 会在 microtask 前恢复标志；真实卸载才取消。
+      queueMicrotask(() => {
+        if (!mountedRef.current && stateRef.current.status === 'waiting') ws.send('match.cancel', {})
+      })
     }
   }, [ws])
 
-  // /match?auto=1：从大厅点「匹配」进入时自动开始匹配。
-  // 服务端的 match.start 是幂等的（同一身份重复入队以最后一次为准），
-  // 因此 StrictMode 下的二次挂载不会造成重复排队。
-  const auto = params.get('auto') === '1'
   useEffect(() => {
-    if (!auto) return
-    ws.send('match.start', {})
-  }, [auto, ws])
+    if (!auto || autoStartedRef.current) return
+    autoStartedRef.current = true
+    startMatch(initialMatchState)
+    const next = new URLSearchParams(params)
+    next.delete('auto')
+    setParams(next, { replace: true })
+  }, [auto, params, setParams, startMatch])
 
-  // 排队计时：进入 waiting 时从 0 开始每秒刷新。
-  useEffect(() => {
-    if (state.status !== 'waiting') return
-    const startedAt = Date.now()
-    const reset = window.setTimeout(() => setElapsed(0), 0)
-    const t = window.setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000)
-    return () => {
-      window.clearTimeout(reset)
-      window.clearInterval(t)
-    }
-  }, [state.status])
-
-  function startMatch() {
-    ws.send('match.start', {})
-  }
   function cancel() {
-    dispatch({ type: 'cancel' })
+    pendingStartId.current = null; pendingNextId.current = null
+    apply({ type: 'cancel' })
     ws.send('match.cancel', {})
-  }
-  function next() {
-    dispatch({ type: 'next' })
-    ws.send('match.next', {})
+    nav('/')
   }
   function leave() {
-    dispatch({ type: 'leave' })
+    pendingStartId.current = null; pendingNextId.current = null
+    apply({ type: 'leave' })
     ws.send('match.leave', {})
+    nav('/')
   }
-
+  function next() {
+    if (stateRef.current.status !== 'chatting') return
+    pendingNextId.current = ws.send('match.next', {})
+  }
+  function canSend() {
+    return stateRef.current.status === 'chatting' && stateRef.current.conversationId === state.conversationId
+  }
+  function send(body: string) { if (canSend()) chat.send(body) }
+  async function sendMedia(file: File) {
+    if (!canSend() || !state.conversationId) return
+    const media = await uploadMedia(file)
+    if (!canSend()) throw new Error('会话已结束或切换，请在当前会话重新发送')
+    ws.sendMessage(state.conversationId, '', media)
+  }
   async function doBlock() {
     setBlockOpen(false)
     if (!state.conversationId) return
     try {
       await blockConversation(state.conversationId)
-      dispatch({ type: 'ended', reason: 'blocked' })
+      if (stateRef.current.conversationId === state.conversationId) {
+        apply({ type: 'ended', reason: 'blocked' }); setFoundId(null); setOverlayId(null)
+      }
       setToast('已屏蔽对方')
-    } catch (e) {
-      setToast(errorMessage((e as { code?: string }).code))
-    }
+    } catch (e) { setToast(errorMessage((e as { code?: string }).code)) }
   }
-
-  async function doReport(r: { messageIds: number[]; reason: string; note: string }) {
+  async function doReport(report: { messageIds: number[]; reason: string; note: string }) {
     setReportOpen(false)
-    const peerMember = peer?.memberId
-    if (!state.conversationId || peerMember === undefined) return
+    if (!state.conversationId || peer?.memberId === undefined) return
     try {
-      await createReport({ conversationId: state.conversationId, memberId: peerMember, ...r })
+      await createReport({ conversationId: state.conversationId, memberId: peer.memberId, ...report })
       setToast('举报已提交')
-    } catch (e) {
-      setToast(errorMessage((e as { code?: string }).code))
-    }
+    } catch (e) { setToast(errorMessage((e as { code?: string }).code)) }
   }
 
-  const peerMessages = chat.messages
-    .filter((m) => m.memberId !== selfMemberId)
-    .map((m) => ({ id: m.id, body: m.body }))
-
-  const chips = peerChips(peer)
-  const activeFilters = filterChips(state.filters)
-  const hasHardFilter =
-    Boolean(state.filters?.cleanMode) ||
-    (state.filters?.gender ?? 'any') !== 'any' ||
-    Boolean(state.filters?.sameProvince)
-
-  if (state.status === 'idle') {
-    return (
-      <main className="flex min-h-[calc(100vh-0px)] items-center justify-center px-4 py-10">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <h1 className="text-xl font-bold text-night-ink">随机匹配</h1>
-          <p className="text-sm text-night-sub">和陌生人一对一随机聊天。</p>
-          <button
-            type="button"
-            onClick={startMatch}
-            className="h-32 w-32 rounded-full text-base font-semibold text-white transition duration-150 ease-out"
-            style={{ background: 'linear-gradient(135deg, var(--color-brand), var(--color-accent))' }}
-          >
-            开始匹配
-          </button>
-          <button
-            type="button"
-            onClick={() => nav('/')}
-            className="text-sm text-night-sub transition duration-150 ease-out hover:text-night-ink"
-          >
-            返回大厅
-          </button>
+  if (state.status === 'idle' || state.status === 'waiting') {
+    return <SearchingView key={state.status} waiting={state.status === 'waiting'} seed={avatarSeed} nickname={nickname}
+      filters={state.filters} onStart={() => startMatch()} onCancel={cancel} onHome={() => nav('/')} />
+  }
+  const peerMessages = chat.messages.filter((m) => m.memberId !== chat.myMemberId && m.kind !== 'system').map((m) => ({ id: m.id, body: m.body }))
+  const showIcebreakers = chatting && !chat.messages.some((m) => m.memberId === chat.myMemberId)
+  const peerCard = (
+    <div className="mb-4 rounded-[20px] border border-glass-line bg-[rgb(var(--c-ov-rgb)/0.04)] p-5 text-center">
+      <GradientAvatar seed={seed} size={56} />
+      <p className="mt-2 text-[17px] font-semibold text-night-ink">{name}</p>
+      <div className="mt-2 flex flex-wrap justify-center gap-2 text-xs">
+        {cardChips.map((item) => <span key={item} className="rounded-full bg-[rgb(var(--c-ov-rgb)/0.07)] px-2.5 py-1 text-night-sub">{item}</span>)}
+        {peer?.tags?.map((tag) => <span key={tag} className="rounded-full bg-[rgb(var(--c-acc-rgb)/0.16)] px-2.5 py-1 text-chat-acc-soft">#{tag}</span>)}
+      </div>
+      {showIcebreakers && <>
+        <p className="mt-4 text-xs text-night-sub">{common.length ? `你们都喜欢 ${common[0]}，打个招呼吧` : '打个招呼吧'}</p>
+        <div className="mt-3 flex flex-wrap justify-center gap-2">
+          {icebreakers(peer?.tags ?? [], myTags).map((text) => <button type="button" key={text} onClick={() => send(text)}
+            className="h-9 rounded-full border border-[rgb(var(--c-acc-rgb)/0.4)] bg-[rgb(var(--c-acc-rgb)/0.1)] px-3 text-xs text-chat-acc-soft">{text}</button>)}
         </div>
-      </main>
-    )
-  }
-
-  if (state.status === 'waiting') {
-    return (
-      <main className="flex min-h-screen items-center justify-center px-4 py-10">
-        <div className="flex flex-col items-center gap-5 text-center">
-          <WaitingOrb />
-          <div className="space-y-1">
-            <p className="text-base font-medium text-night-ink">正在寻找…</p>
-            <p className="text-xs text-night-sub">已等待 {elapsed} 秒</p>
-          </div>
-          {activeFilters.length > 0 && (
-            <div className="flex flex-wrap justify-center gap-2">
-              {activeFilters.map((c) => (
-                <span key={c} className="rounded-full bg-glass px-3 py-1 text-xs text-night-ink">
-                  {c}
-                </span>
-              ))}
-            </div>
-          )}
-          {elapsed >= RELAX_HINT_SECONDS && hasHardFilter && (
-            <p className="text-xs text-night-sub">当前条件较严格，可以返回大厅调整</p>
-          )}
-          <button
-            type="button"
-            onClick={cancel}
-            className="rounded-full border border-glass-line bg-glass px-5 py-2 text-sm text-night-ink transition duration-150 ease-out"
-          >
-            取消匹配
-          </button>
-        </div>
-      </main>
-    )
-  }
-
-  if (state.status === 'ended') {
-    return (
-      <main className="flex min-h-screen items-center justify-center px-4 py-10">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <p className="text-base text-night-ink">{endReasonText(state.endReason)}</p>
-          <button
-            type="button"
-            onClick={startMatch}
-            className="rounded-full px-6 py-2 text-sm font-medium text-white transition duration-150 ease-out"
-            style={{ background: 'linear-gradient(135deg, var(--color-brand), var(--color-accent))' }}
-          >
-            再来一个
-          </button>
-          <button
-            type="button"
-            onClick={() => nav('/')}
-            className="text-sm text-night-sub transition duration-150 ease-out hover:text-night-ink"
-          >
-            返回大厅
-          </button>
-        </div>
-      </main>
-    )
-  }
-
-  // 1v1 匹配按产品决定显示对方的真实昵称（不再用「匿名·XXXX」代号）。
-  // match.found 的 peer 优先；断线恢复（resume）时没有 match.found，退回会话详情里的 peer。
-  const peerNickname = peer?.nickname?.trim() || chat.peer?.nickname?.trim() || ''
-  const peerName = peerNickname || '对方'
-  const peerAvatarSeed = peer?.avatarSeed || chat.peer?.avatarSeed || 'anonymous'
-
-  return (
-    <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
-      <GlassPanel className="h-full rounded-none md:rounded-panel">
-        <header className="flex items-center justify-between gap-2 border-b border-glass-line px-4 py-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <button
-              type="button"
-              aria-label="返回大厅"
-              onClick={() => nav('/')}
-              className="h-8 w-8 shrink-0 rounded-full text-center text-sm text-white"
-              style={{ background: 'linear-gradient(135deg, var(--color-brand), var(--color-accent))' }}
-            >
-              ←
-            </button>
-            <GradientAvatar seed={peerAvatarSeed} size={28} />
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium text-night-ink">{peerName}</div>
-              {chips.length > 0 && (
-                <div className="flex flex-wrap gap-x-1.5 text-[11px] text-night-sub">
-                  {chips.map((c) => (
-                    <span key={c}>{c}</span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="hidden shrink-0 items-center gap-1.5 md:flex">
-            <ActionButtons
-              onNext={next}
-              onLeave={leave}
-              onBlock={() => setBlockOpen(true)}
-              onReport={() => setReportOpen(true)}
-            />
-          </div>
-          <details className="relative shrink-0 md:hidden">
-            <summary className="cursor-pointer list-none rounded-sm px-2 py-1 text-night-ink">⋯</summary>
-            <div className="absolute right-0 z-10 mt-1 flex flex-col gap-1 rounded-card border border-glass-line bg-night-to p-2">
-              <ActionButtons
-                onNext={next}
-                onLeave={leave}
-                onBlock={() => setBlockOpen(true)}
-                onReport={() => setReportOpen(true)}
-              />
-            </div>
-          </details>
-        </header>
-        <MessageList
-          messages={chat.messages}
-          selfMemberId={selfMemberId}
-          typing={chat.typing}
-        />
-        <Composer onSend={chat.send} onTyping={chat.sendTyping} onSendMedia={chat.sendMedia} />
-      </GlassPanel>
-      <BlockConfirm open={blockOpen} onCancel={() => setBlockOpen(false)} onConfirm={doBlock} />
-      <ReportDialog
-        open={reportOpen}
-        peerMessages={peerMessages}
-        onClose={() => setReportOpen(false)}
-        onSubmit={doReport}
-      />
-    </main>
+      </>}
+    </div>
   )
-}
-
-function ActionButtons({
-  onNext,
-  onLeave,
-  onBlock,
-  onReport,
-}: {
-  onNext: () => void
-  onLeave: () => void
-  onBlock: () => void
-  onReport: () => void
-}) {
-  const cls =
-    'rounded-sm px-2.5 py-1 text-xs text-night-ink transition duration-150 ease-out hover:bg-glass'
   return (
     <>
-      <button type="button" className={cls} onClick={onNext}>
-        下一个
-      </button>
-      <button type="button" className={cls} onClick={onLeave}>
-        离开
-      </button>
-      <button type="button" className={cls} onClick={onBlock}>
-        屏蔽
-      </button>
-      <button type="button" className={cls} onClick={onReport}>
-        举报
-      </button>
+      <main inert={overlayOpen} className="mx-auto flex h-[100dvh] max-w-[760px] flex-col p-0 md:p-4">
+        <GlassPanel className="relative h-full rounded-none md:rounded-panel">
+          <header className="flex h-[60px] shrink-0 items-center gap-2 border-b border-glass-line px-2">
+            <button type="button" aria-label="返回" onClick={() => chatting ? setEndOpen(true) : nav('/')} className="flex h-11 w-11 shrink-0 items-center justify-center text-night-ink"><Icon name="back" /></button>
+            <GradientAvatar seed={seed} size={36} />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[15px] font-semibold text-night-ink">{name}</p>
+              <div className={`truncate text-xs ${chatting && chat.typing ? 'text-chat-acc' : 'text-night-sub'}`}>
+                {!chatting ? '已离开' : chat.typing ? '正在输入…' : summary.map((item, i) => <Fragment key={item}>{i > 0 && <span aria-hidden="true" className="px-1">·</span>}<span>{item}</span></Fragment>)}
+              </div>
+            </div>
+            {chatting && <NextButton key={`${state.status}:${state.conversationId}:${nextReset}`} onNext={next} />}
+            <button type="button" aria-label="更多操作" onClick={() => setMenuOpen(true)} className="flex h-11 w-11 shrink-0 items-center justify-center text-night-ink"><Icon name="more" /></button>
+          </header>
+          <MessageList conversationKey={state.conversationId} messages={chat.messages} selfMemberId={chat.myMemberId}
+            showSender={false} header={peerCard} typing={chatting && chat.typing}
+            footer={!chatting ? <div className="my-4 flex justify-center"><p className="rounded-full bg-glass px-3 py-1.5 text-xs text-chat-sys">{endReasonText(state.endReason)}</p></div> : undefined} />
+          {chatting ? <Composer key={state.conversationId} onSend={send} onTyping={() => { if (canSend()) chat.sendTyping() }} onSendMedia={sendMedia} /> : (
+            <div className="border-t border-glass-line p-3 pb-[max(12px,env(safe-area-inset-bottom))]">
+              <p className="mb-3 text-center text-xs text-night-sub">对话已结束，聊天记录仍可往上翻看</p>
+              <div className="flex gap-3">
+                <button type="button" onClick={() => nav('/')} className="h-12 flex-1 rounded-full border border-glass-line text-sm text-night-ink">返回大厅</button>
+                <button type="button" onClick={() => startMatch()} className="flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-cta text-base font-bold text-white"><Icon name="shuffle" size={20} />再来一个</button>
+              </div>
+            </div>
+          )}
+        </GlassPanel>
+        <Sheet open={menuOpen} title="更多操作" onClose={() => setMenuOpen(false)}>
+          <div className="mb-5 text-center text-lobby-ink"><GradientAvatar seed={seed} size={56} /><p className="mt-2 font-semibold">{name}</p>
+            <p className="mt-1 text-xs text-lobby-sub">{summary.join(' · ')} {peer?.tags?.map((tag) => `#${tag}`).join(' ')}</p></div>
+          <button type="button" aria-label="举报" onClick={() => { setMenuOpen(false); setReportOpen(true) }} className="flex w-full items-center gap-3 rounded-sm p-3 text-left text-lobby-ink">
+            <Icon name="flag" /><span><span className="block text-sm">举报</span><span className="block text-xs text-lobby-sub">勾选对方的消息并说明原因</span></span>
+          </button>
+          <button type="button" aria-label="屏蔽" onClick={() => { setMenuOpen(false); setBlockOpen(true) }} className="flex w-full items-center gap-3 rounded-sm p-3 text-left text-chat-danger">
+            <Icon name="ban" /><span><span className="block text-sm">屏蔽</span><span className="block text-xs text-lobby-sub">屏蔽对方并结束这段对话</span></span>
+          </button>
+          <button type="button" onClick={() => setMenuOpen(false)} className="mt-3 h-11 w-full rounded-full border border-lobby-line text-sm text-lobby-sub">取消</button>
+        </Sheet>
+        <Sheet open={endOpen} title="结束这段对话？" onClose={() => setEndOpen(false)}>
+          <p className="mb-4 text-sm text-lobby-sub">离开后对方会看到「对方已离开」，这段对话无法再继续。</p>
+          <button type="button" onClick={leave} className="mb-3 h-12 w-full rounded-full bg-[rgb(var(--c-danger-rgb)/0.14)] text-sm text-chat-danger">结束聊天</button>
+          <button type="button" onClick={() => setEndOpen(false)} className="h-12 w-full rounded-full border border-lobby-line text-sm text-lobby-ink">继续聊</button>
+        </Sheet>
+        <BlockConfirm open={blockOpen} name={name} onCancel={() => setBlockOpen(false)} onConfirm={doBlock} />
+        <ReportDialog open={reportOpen} peerMessages={peerMessages} onClose={() => setReportOpen(false)} onSubmit={doReport} />
+      </main>
+      {chatting && foundId === state.conversationId && <MatchReminder key={`reminder:${foundId}`} />}
+      {overlayOpen && <FoundOverlay key={`overlay:${overlayId}`} seed={avatarSeed} nickname={nickname} peer={peer} myTags={myTags} onClose={closeOverlay} />}
     </>
   )
 }

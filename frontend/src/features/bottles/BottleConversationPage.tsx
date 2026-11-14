@@ -6,6 +6,7 @@ import { useUiStore } from '../../stores/ui'
 import { errorMessage } from '../../lib/api/errorMessages'
 import { blockConversation, createReport } from '../../lib/api/client'
 import { MessageList } from '../../components/MessageList'
+import { Icon } from '../../components/Icon'
 import { Composer } from '../../components/Composer'
 import { GlassPanel } from '../../components/GlassPanel'
 import { BlockConfirm } from '../../components/BlockConfirm'
@@ -99,7 +100,7 @@ export default function BottleConversationPage() {
   const name = peerNickname ?? '对方'
 
   return (
-    <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
+    <main className="mx-auto flex h-[100dvh] max-w-[760px] flex-col p-0 md:p-4">
       <GlassPanel className="h-full rounded-none md:rounded-panel">
         <header className="flex items-center justify-between gap-2 border-b border-glass-line px-4 py-3">
           <div className="flex items-center gap-2">
@@ -110,7 +111,7 @@ export default function BottleConversationPage() {
               className="h-8 w-8 rounded-full text-center text-sm text-white"
               style={{ background: 'linear-gradient(135deg, var(--color-brand), var(--color-accent))' }}
             >
-              ←
+              <Icon name="back" size={18} className="mx-auto" />
             </button>
             <span className="text-sm font-medium text-night-ink">{name}</span>
           </div>
@@ -132,6 +133,8 @@ export default function BottleConversationPage() {
           </div>
         </header>
         <MessageList
+          conversationKey={conversationId}
+          showSender={false}
           messages={chat.messages}
           selfMemberId={chat.myMemberId}
           typing={chat.typing}

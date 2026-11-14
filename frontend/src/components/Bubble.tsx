@@ -4,25 +4,21 @@ interface BubbleProps {
   self: boolean
   children: ReactNode
   className?: string
+  first?: boolean
+  /** 组尾标识；§2.2 的底部尾角始终为 6px，不随 last 改变。 */
+  last?: boolean
 }
 
-/**
- * 聊天气泡：对方用半透明白底，自己用品牌紫→淡紫渐变白字（how.md 1.4）。
- * 圆角 20px，入场 fade-up。
- */
-export function Bubble({ self, children, className }: BubbleProps) {
+/** 实色气泡；组首保留完整上圆角，底部尾角始终为 6px。 */
+export function Bubble({ self, children, className, first = true }: BubbleProps) {
   return (
     <div
-      className={`animate-fade-up max-w-[78%] whitespace-pre-wrap break-words rounded-card px-3.5 py-2 text-[15px] leading-relaxed ${
+      className={`animate-fade-up whitespace-pre-wrap break-words px-3.5 py-[9px] text-[15px] leading-[1.5] ${
         self
-          ? 'text-white'
-          : 'border border-glass-line bg-bubble-peer text-night-ink backdrop-blur-[12px]'
+          ? 'bg-bubble-self text-white'
+          : 'border border-glass-line bg-bubble-peer text-night-ink'
       } ${className ?? ''}`}
-      style={
-        self
-          ? { background: 'linear-gradient(135deg, var(--color-brand), var(--color-brand-2))' }
-          : undefined
-      }
+      style={{ borderRadius: self ? `18px ${first ? 18 : 6}px 6px 18px` : `${first ? 18 : 6}px 18px 18px 6px` }}
     >
       {children}
     </div>

@@ -203,8 +203,10 @@ export class WsClient {
   }
 
   /** 发送一条不需要等待 ack 的消息（如 match.start / match.next / conv.subscribe）。 */
-  send(type: string, data?: unknown): void {
-    this.sendFrame({ t: type, id: genId(), d: data })
+  send(type: string, data?: unknown): string {
+    const id = genId()
+    this.sendFrame({ t: type, id, d: data })
+    return id
   }
 
   /** 订阅会话（供恢复使用）。 */

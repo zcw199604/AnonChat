@@ -46,11 +46,11 @@ export function ReportDialog({ open, peerMessages, onClose, onSubmit }: ReportDi
 
   return (
     <div
-      className="animate-fade-up fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="animate-fade-up fixed inset-0 z-50 flex items-center justify-center bg-[var(--c-scrim)] p-4"
       role="dialog"
       aria-label="举报"
     >
-      <div className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-panel bg-lobby-card p-5 shadow-soft">
+      <div className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-panel bg-sheet p-5 shadow-soft">
         <h2 className="mb-3 text-base font-semibold text-lobby-ink">举报</h2>
         <div className="mb-3 space-y-1">
           {peerMessages.map((m) => (

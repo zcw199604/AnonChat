@@ -13,6 +13,27 @@
   --surface-line: #ebebef;
   --ink: #1c1c28;
   --sub: #6e6e80;
+
+  /* 聊天语义 token：白天（奶白）。 */
+  --c-bg-from: #f7f7fa;
+  --c-bg-to: #efeff5;
+  --c-ink: #1c1c28;
+  --c-sub: #5e5e70;
+  --c-sys: #4a4a5a;
+  --c-ov-rgb: 28 28 40;
+  --c-peer: #ffffff;
+  --c-self: #6f5fe8;
+  --c-acc: #5b4bd6;
+  --c-acc-rgb: 111 95 232;
+  --c-acc-soft-ink: #4a3bc4;
+  --c-skip-rgb: 180 48 126;
+  --c-skip-ink: #b4307e;
+  --c-danger: #d23b40;
+  --c-danger-rgb: 210 59 64;
+  --c-sheet: #ffffff;
+  --c-scrim: rgb(20 20 30 / 0.35);
+  --c-panel: rgb(255 255 255 / 0.55);
+  --gradient-cta: linear-gradient(135deg, #6f5fe8, #c2589c);
 }
 
 html[data-theme='dark'] {
@@ -21,6 +42,26 @@ html[data-theme='dark'] {
   --surface-line: rgb(255 255 255 / 0.08);
   --ink: #f5f5f7;
   --sub: #8e8e93;
+
+  /* 聊天语义 token：夜晚（暮紫）。 */
+  --c-bg-from: #0f1117;
+  --c-bg-to: #1a1d29;
+  --c-ink: #f5f5f7;
+  --c-sub: #9a9aa3;
+  --c-sys: #c9c9d1;
+  --c-ov-rgb: 255 255 255;
+  --c-peer: #252836;
+  --c-self: #6f5fe8;
+  --c-acc: #b4a9ff;
+  --c-acc-rgb: 139 124 246;
+  --c-acc-soft-ink: #d3ccff;
+  --c-skip-rgb: 232 139 196;
+  --c-skip-ink: #f2b6da;
+  --c-danger: #f2777b;
+  --c-danger-rgb: 242 119 123;
+  --c-sheet: #1e2130;
+  --c-scrim: rgb(5 6 10 / 0.6);
+  --c-panel: rgb(255 255 255 / 0.04);
 }
 
 @theme {
@@ -34,13 +75,20 @@ html[data-theme='dark'] {
   --color-lobby-ink: var(--ink);
   --color-lobby-sub: var(--sub);
 
-  --color-night-from: #0f1117;
-  --color-night-to: #1a1d29;
-  --color-glass: rgb(255 255 255 / 0.06);
-  --color-glass-line: rgb(255 255 255 / 0.08);
-  --color-bubble-peer: rgb(255 255 255 / 0.08);
-  --color-night-ink: #f5f5f7;
-  --color-night-sub: #8e8e93;
+  --color-night-from: var(--c-bg-from);
+  --color-night-to: var(--c-bg-to);
+  --color-glass: rgb(var(--c-ov-rgb) / 0.06);
+  --color-glass-line: rgb(var(--c-ov-rgb) / 0.08);
+  --color-bubble-peer: var(--c-peer);
+  --color-night-ink: var(--c-ink);
+  --color-night-sub: var(--c-sub);
+  --color-bubble-self: var(--c-self);
+  --color-chat-sys: var(--c-sys);
+  --color-chat-acc: var(--c-acc);
+  --color-chat-acc-soft: var(--c-acc-soft-ink);
+  --color-chat-danger: var(--c-danger);
+  --color-sheet: var(--c-sheet);
+  --color-skip: var(--c-skip-ink);
 
   /* 仅用于错误提示的中性红 */
   --color-danger: #e5484d;
@@ -55,6 +103,14 @@ html[data-theme='dark'] {
 
   --animate-fade-up: fade-up 200ms ease-out both;
   --animate-breathe: breathe 1.6s ease-in-out infinite;
+  --animate-match-ripple: match-ripple 2.4s ease-out infinite;
+  --animate-found-left: found-left 400ms ease-out both;
+  --animate-found-right: found-right 400ms ease-out both;
+  --animate-found-progress: found-progress 900ms linear both;
+}
+
+@utility bg-cta {
+  background-image: var(--gradient-cta);
 }
 
 @keyframes fade-up {
@@ -78,6 +134,26 @@ html[data-theme='dark'] {
     opacity: 1;
     transform: scale(1);
   }
+}
+
+@keyframes match-ripple {
+  from { transform: scale(0.62); opacity: 0.75; }
+  to { transform: scale(2.15); opacity: 0; }
+}
+
+@keyframes found-left {
+  from { transform: translateX(-48px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes found-right {
+  from { transform: translateX(48px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes found-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
 }
 
 /* 浅色到暗色的背景过渡：两层固定定位背景，暗色层按路由切换 opacity（300ms ease-out）。 */

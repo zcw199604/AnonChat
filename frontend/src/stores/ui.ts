@@ -9,7 +9,7 @@ interface UiState {
   connected: boolean
   /** 大厅明暗偏好（how.md 1.3，持久化在 localStorage）。 */
   lobbyTheme: Theme
-  /** /p/:token 是否已进入会话（决定是否切换暗色）。 */
+  /** /p/:token 是否已进入会话（决定是否隐藏大厅顶栏）。 */
   inPrivateConversation: boolean
   /** 汉堡抽屉是否打开。 */
   drawerOpen: boolean
