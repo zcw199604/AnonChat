@@ -53,7 +53,16 @@ func TestDialSignsPrivatelyAndSendsMatchingFrames(t *testing.T) {
 			return
 		}
 		defer c.CloseNow()
-		for range 3 {
+		var frame map[string]any
+		if wsjson.Read(r.Context(), c, &frame) != nil {
+			return
+		}
+		frames <- frame
+		// chat2019 先回 code 12 确认登录，之后才处理 random。
+		if wsjson.Write(r.Context(), c, map[string]any{"code": 12, "content": "连接服务器成功！"}) != nil {
+			return
+		}
+		for range 2 {
 			var frame map[string]any
 			if wsjson.Read(r.Context(), c, &frame) != nil {
 				return
@@ -70,7 +79,7 @@ func TestDialSignsPrivatelyAndSendsMatchingFrames(t *testing.T) {
 	defer rand.Close()
 	cfg := guardConfig(t)
 	cfg.RandServerURL = rand.URL
-	got := make(chan map[string]any, 1)
+	got := make(chan map[string]any, 4)
 	closed := make(chan closeEvent, 2)
 	conn, err := chat2019.Dial(context.Background(), cfg, self, func(v map[string]any) { got <- v }, func(e bool, err error) { closed <- closeEvent{e, err} })
 	if err != nil {
@@ -95,6 +104,9 @@ func TestDialSignsPrivatelyAndSendsMatchingFrames(t *testing.T) {
 			t.Fatalf("frame=%s want=%s", b, a)
 		}
 	}
+	if ack := receive(t, got); ack["code"] != float64(12) {
+		t.Fatalf("未转发登录确认帧: %v", ack)
+	}
 	if receive(t, got)["code"] != float64(15) {
 		t.Fatal("未转发下行帧")
 	}
@@ -113,6 +125,9 @@ func TestDialSignsPrivatelyAndSendsMatchingFrames(t *testing.T) {
 	}
 }
 func TestForceoutAndUnexpectedDisconnect(t *testing.T) {
+	// 该假上游从不发 code 12，缩短等待以免每个子测试都等满 signAckTimeout。
+	restore := chat2019.SetSignAckTimeoutForTest(50 * time.Millisecond)
+	defer restore()
 	for _, force := range []bool{true, false} {
 		t.Run(fmt.Sprint(force), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +140,8 @@ func TestForceoutAndUnexpectedDisconnect(t *testing.T) {
 				if wsjson.Read(r.Context(), c, &sign) != nil {
 					return
 				}
+				// 等 Dial 因 signAckTimeout 返回连接后再断线/踢出，回调才归属调用方。
+				time.Sleep(150 * time.Millisecond)
 				if force {
 					_ = wsjson.Write(r.Context(), c, map[string]any{"code": -3, "forceout": true})
 				}
@@ -203,7 +220,13 @@ func TestConnectionSendsWebSocketPing(t *testing.T) {
 			return
 		}
 		defer c.CloseNow()
-		_, _, _ = c.Read(r.Context())
+		var sign map[string]any
+		if wsjson.Read(r.Context(), c, &sign) != nil {
+			return
+		}
+		if wsjson.Write(r.Context(), c, map[string]any{"code": 12, "content": "连接服务器成功！"}) != nil {
+			return
+		}
 		_, _, _ = c.Read(r.Context())
 	}))
 	defer srv.Close()
@@ -218,5 +241,134 @@ func TestConnectionSendsWebSocketPing(t *testing.T) {
 	case <-ping:
 	case <-time.After(33 * time.Second):
 		t.Fatal("30秒内未发送WS ping")
+	}
+}
+
+func TestDialWaitsForSignAckBeforeReturning(t *testing.T) {
+	const ackDelay = 200 * time.Millisecond
+	frames := make(chan map[string]any, 4)
+	ackSent := make(chan time.Time, 1)
+	randomAt := make(chan time.Time, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		var sign map[string]any
+		if wsjson.Read(r.Context(), c, &sign) != nil {
+			return
+		}
+		frames <- sign
+		time.Sleep(ackDelay)
+		if wsjson.Write(r.Context(), c, map[string]any{"code": 12, "content": "连接服务器成功！"}) != nil {
+			return
+		}
+		sent := time.Now()
+		ackSent <- sent
+		var random map[string]any
+		if wsjson.Read(r.Context(), c, &random) != nil {
+			return
+		}
+		randomAt <- time.Now()
+		frames <- random
+		_, _, _ = c.Read(r.Context())
+	}))
+	defer srv.Close()
+	cfg := guardConfig(t)
+	cfg.FallbackWS = "ws" + strings.TrimPrefix(srv.URL, "http")
+	got := make(chan map[string]any, 4)
+	start := time.Now()
+	conn, err := chat2019.Dial(context.Background(), cfg, self, func(v map[string]any) { got <- v }, nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	if elapsed < ackDelay*9/10 {
+		t.Fatalf("Dial 未等 sign ack 就返回, 耗时=%v", elapsed)
+	}
+	// Dial 返回之时, onFrame 必须已经收到 code 12。
+	select {
+	case frame := <-got:
+		if frame["code"] != float64(12) {
+			t.Fatalf("Dial 返回前的下行帧=%v", frame)
+		}
+	default:
+		t.Fatal("Dial 返回时 onFrame 尚未收到 code 12")
+	}
+	if sign := receive(t, frames); sign["act"] != "sign" {
+		t.Fatalf("首帧=%v", sign)
+	}
+	if err := conn.Send(map[string]any{"act": "random", "id": self.UID, "userAge": "0"}); err != nil {
+		t.Fatal(err)
+	}
+	random := receive(t, frames)
+	if random["act"] != "random" || random["id"] != self.UID {
+		t.Fatalf("random帧=%v", random)
+	}
+	if ackAt, at := receive(t, ackSent), receive(t, randomAt); !at.After(ackAt) {
+		t.Fatalf("random 在 code 12 之前就到达假上游: ack=%v random=%v", ackAt, at)
+	}
+}
+
+func TestDialReturnsConnWhenSignAckNeverArrives(t *testing.T) {
+	restore := chat2019.SetSignAckTimeoutForTest(100 * time.Millisecond)
+	defer restore()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		var sign map[string]any
+		if wsjson.Read(r.Context(), c, &sign) != nil {
+			return
+		}
+		// 永不回 code 12, 只保持连接。
+		_, _, _ = c.Read(r.Context())
+	}))
+	defer srv.Close()
+	cfg := guardConfig(t)
+	cfg.FallbackWS = "ws" + strings.TrimPrefix(srv.URL, "http")
+	start := time.Now()
+	conn, err := chat2019.Dial(context.Background(), cfg, self, nil, nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("超时不应报错: %v", err)
+	}
+	defer conn.Close()
+	if elapsed < 80*time.Millisecond || elapsed > 3*time.Second {
+		t.Fatalf("未按 signAckTimeout 返回连接, 耗时=%v", elapsed)
+	}
+	if err := conn.Send(map[string]any{"act": "random", "id": self.UID, "userAge": "0"}); err != nil {
+		t.Fatalf("返回的连接不可用: %v", err)
+	}
+}
+
+func TestDialFailsSilentlyWhenConnectionClosesBeforeSignAck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		var sign map[string]any
+		_ = wsjson.Read(r.Context(), c, &sign)
+		// 收到 sign 后立刻断开, 且不发 code 12。
+		c.CloseNow()
+	}))
+	defer srv.Close()
+	cfg := guardConfig(t)
+	cfg.FallbackWS = "ws" + strings.TrimPrefix(srv.URL, "http")
+	closed := make(chan closeEvent, 2)
+	conn, err := chat2019.Dial(context.Background(), cfg, self, nil, func(e bool, err error) { closed <- closeEvent{e, err} })
+	if err == nil {
+		conn.Close()
+		t.Fatal("sign ack 之前断线必须返回错误")
+	}
+	select {
+	case event := <-closed:
+		t.Fatalf("Dial 失败时不应回调 onClose: %+v", event)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
