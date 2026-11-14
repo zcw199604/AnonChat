@@ -62,6 +62,13 @@ func externalLogAttr(a slog.Attr) (slog.Attr, bool) {
 		if a.Value.Kind() == slog.KindString && a.Value.String() == "wanfeng-client" {
 			return a, true
 		}
+	case "reason":
+		if a.Value.Kind() == slog.KindString {
+			switch a.Value.String() {
+			case "connection_failed", "forceout", "identity_invalid", "handshake_or_ip_ban", "timeout", "cancelled", "connection_lost":
+				return a, true
+			}
+		}
 	case "kind":
 		if a.Value.Kind() == slog.KindString && (a.Value.String() == "text" || a.Value.String() == "image" || a.Value.String() == "video" || a.Value.String() == "audio") {
 			return a, true

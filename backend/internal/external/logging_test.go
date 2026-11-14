@@ -44,3 +44,27 @@ func TestExternalLogsNeverEchoUpstreamData(t *testing.T) {
 		})
 	}
 }
+
+func TestExternalLogReasonWhitelist(t *testing.T) {
+	var buf bytes.Buffer
+	logger := externalLogger(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	allowed := []string{"connection_failed", "forceout", "identity_invalid", "handshake_or_ip_ban", "timeout", "cancelled", "connection_lost"}
+	for _, reason := range allowed {
+		logger.Warn("外站连接失败", "provider", "chat2019", "reason", reason)
+	}
+	// 非白名单取值与非字符串取值必须被丢弃。
+	logger.Warn("外站连接失败", "provider", "wanfeng", "reason", "secret-reason")
+	logger.Warn("外站连接失败", "provider", "wanfeng", "reason", 3)
+	out := buf.String()
+	for _, reason := range allowed {
+		if !strings.Contains(out, `"reason":"`+reason+`"`) {
+			t.Fatalf("白名单reason被丢弃: %s: %s", reason, out)
+		}
+	}
+	if strings.Contains(out, "secret-reason") {
+		t.Fatalf("非白名单reason泄露: %s", out)
+	}
+	if strings.Count(out, `"reason"`) != len(allowed) {
+		t.Fatalf("非白名单reason未被丢弃: %s", out)
+	}
+}

@@ -78,6 +78,7 @@ type link struct {
 	provider                      provider
 	sess                          session
 	state                         linkState
+	matchStartedAt                time.Time
 	closed                        bool
 	attempt                       uint64
 	req                           match.ExternalRequest
@@ -286,12 +287,14 @@ func (b *Bridge) StartMatch(ctx context.Context, r match.ExternalRequest) error 
 				old.req = r
 				old.attempt = r.Attempt
 				old.state = linkMatching
+				old.matchStartedAt = b.now()
 				old.gateOpen = false
 				old.pending = nil
 				err := old.sess.startMatch()
 				old.mu.Unlock()
 				if err == nil {
 					b.count(p.Name(), func(c *Counters) { c.Started++ })
+					b.deps.Logger.Info("外站开始匹配", "provider", p.Name(), "attempt", r.Attempt)
 					return nil
 				}
 				b.closeLink(old, false)
@@ -305,7 +308,7 @@ func (b *Bridge) StartMatch(ctx context.Context, r match.ExternalRequest) error 
 			b.closeLink(old, false)
 		}
 		mediaCtx, stopMedia := context.WithCancel(context.Background())
-		l := &link{userID: r.Identity.ID, provider: p, req: r, attempt: r.Attempt, state: linkMatching, inbox: make(chan inboundEvent, 128), outbox: make(chan outboundItem, 128), done: make(chan struct{}), inboundTokens: make(map[string]pgtype.UUID), outboundTokens: make(map[string]pgtype.UUID), mediaCtx: mediaCtx, stopMedia: stopMedia}
+		l := &link{userID: r.Identity.ID, provider: p, req: r, attempt: r.Attempt, state: linkMatching, matchStartedAt: b.now(), inbox: make(chan inboundEvent, 128), outbox: make(chan outboundItem, 128), done: make(chan struct{}), inboundTokens: make(map[string]pgtype.UUID), outboundTokens: make(map[string]pgtype.UUID), mediaCtx: mediaCtx, stopMedia: stopMedia}
 		l.mu.Lock()
 		b.mu.Lock()
 		valid = b.validAttempt(r)
@@ -343,6 +346,7 @@ func (b *Bridge) StartMatch(ctx context.Context, r match.ExternalRequest) error 
 			continue
 		}
 		b.count(p.Name(), func(c *Counters) { c.Started++ })
+		b.deps.Logger.Info("外站开始匹配", "provider", p.Name(), "attempt", r.Attempt)
 		return nil
 	}
 	return match.ErrNoExternalProvider
@@ -365,9 +369,12 @@ func (b *Bridge) CancelMatch(id pgtype.UUID, attempt uint64) {
 	}
 	l.mu.Lock()
 	cancel := !l.closed && l.attempt == attempt && l.state == linkMatching
+	startedAt := l.matchStartedAt
 	l.mu.Unlock()
 	if cancel && b.closeLink(l, true) {
 		b.count(l.provider.Name(), func(c *Counters) { c.Cancelled++ })
+		// 该入口同时承载匹配窗口超时与用户取消，无法区分时统一记为 cancelled。
+		b.deps.Logger.Info("外站匹配取消", "provider", l.provider.Name(), "reason", "cancelled", "elapsed", time.Since(startedAt))
 	}
 }
 func (b *Bridge) count(name string, fn func(*Counters)) {
@@ -427,19 +434,28 @@ func (b *Bridge) connectionLost(l *link, err error) {
 	// held. Latch invalidation immediately; cleanup acquires the link lock and
 	// marks it closed before touching the network or ending a conversation.
 	first := l.stopping.CompareAndSwap(false, true)
+	cooled := false
 	if first || errors.Is(err, ErrIdentityReset) || errors.Is(err, chat2019.ErrForceout) || errors.Is(err, ErrWanfengHandshake) || errors.Is(err, wanfeng.ErrIPBanSwitched) || (err != nil && wanfeng.IsIPBanMessage(err.Error())) {
+		cooled = err != nil && !errors.Is(err, ErrNewIdentityLimited)
 		b.cooldown(l, err)
+	}
+	if !cooled && err != nil {
+		// cooldown 已为带分类错误的断线记录过 Warn("外站连接失败")，这里只补记其余断线，避免重复。
+		b.deps.Logger.Warn("外站连接断开", "provider", l.provider.Name(), "reason", "connection_lost", "error", err)
 	}
 	if first {
 		b.runAsync(func() { b.closeLink(l, false) })
 	}
 }
 func (b *Bridge) cooldown(l *link, err error) {
-	if err == nil || errors.Is(err, ErrNewIdentityLimited) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, ErrNewIdentityLimited) {
+		b.deps.Logger.Info("外站新身份限流", "provider", l.provider.Name())
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	now := b.now()
 	name := l.provider.Name()
 	s := b.stats[name]
@@ -472,6 +488,9 @@ func (b *Bridge) cooldown(l *link, err error) {
 		}
 	}
 	b.stats[name] = s
+	b.mu.Unlock()
+	// 只记录分类结果；error 由 externalLogger 折叠为类型名，绝不落上游错误原文。
+	b.deps.Logger.Warn("外站连接失败", "provider", name, "reason", s.LastError, "error", err)
 }
 func (b *Bridge) ApplySettings(s Settings) {
 	b.mu.Lock()

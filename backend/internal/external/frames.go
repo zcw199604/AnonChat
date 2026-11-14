@@ -48,6 +48,10 @@ func (b *Bridge) inboundLoop(l *link) {
 				}
 			} else {
 				code := frameCode(ev.frame)
+				if l.state == linkMatching {
+					// 只记帧类型码，绝不记录帧内 uid/昵称/正文等内容。
+					b.deps.Logger.Info("外站匹配中收到帧", "provider", l.provider.Name(), "code", code, "state", int(l.state))
+				}
 				if (l.state == linkActivating || (l.state == linkInRoom && !l.gateOpen)) && code != 15 {
 					if len(l.pending) < 50 {
 						l.pending = append(l.pending, ev.frame)
@@ -199,6 +203,7 @@ func (b *Bridge) activate(l *link, attempt uint64, peer match.ExternalPeer) {
 			}
 			publish()
 			b.count(l.provider.Name(), func(c *Counters) { c.Found++ })
+			b.deps.Logger.Info("外站匹配成功", "provider", l.provider.Name(), "elapsed", time.Since(l.matchStartedAt))
 			return true
 		},
 	}

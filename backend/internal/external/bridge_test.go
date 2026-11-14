@@ -1,11 +1,14 @@
 package external
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -515,5 +518,64 @@ func TestBridgeNewAttemptReplacesOldMatchingLinkAtCapacity(t *testing.T) {
 	defer next.mu.Unlock()
 	if next.closed {
 		t.Fatal("旧取消关闭新连接")
+	}
+}
+
+// lockedLogBuffer 是并发安全（inboundLoop 等后台协程会写日志）的日志缓冲。
+type lockedLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *lockedLogBuffer) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *lockedLogBuffer) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// TestBridgeMatchDiagnosticsLogWithoutFrameContent 覆盖开始匹配 → 收到帧 → 取消的诊断日志，
+// 并确认帧内 uid/昵称/正文不会进入日志。
+func TestBridgeMatchDiagnosticsLogWithoutFrameContent(t *testing.T) {
+	logs := &lockedLogBuffer{}
+	b := NewBridge(BridgeDeps{Logger: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	b.ApplySettings(Settings{Enabled: true, Chat2019Enabled: true, Chat2019MaxSessions: 1, ExternalMatchTimeout: 10 * time.Second})
+	b.providers = []provider{&fakeProvider{name: "chat2019"}}
+	b.choose = func(int) int { return 0 }
+	b.found = func(context.Context, pgtype.UUID, uint64, match.ExternalPeer, match.ExternalHooks) (pgtype.UUID, error) {
+		t.Error("匹配阶段不应激活会话")
+		return pgtype.UUID{}, match.ErrActivationRejected
+	}
+	t.Cleanup(b.Close)
+
+	const secretUID, secretNick, secretBody = "secret-peer-uid", "secret-peer-nick", "secret-peer-body"
+	r := bridgeRequest(1)
+	l := startBridge(t, b, r)
+	b.emitFrame(l, map[string]any{"code": 7, "fromuser": map[string]any{"id": secretUID, "name": secretNick}, "tid": "secret-tid", "content": secretBody})
+	waitBridge(t, func() bool { return strings.Contains(logs.String(), "外站匹配中收到帧") })
+	b.CancelMatch(r.Identity.ID, 1)
+	waitBridge(t, func() bool { return strings.Contains(logs.String(), "外站匹配取消") })
+
+	out := logs.String()
+	for _, want := range []string{"外站开始匹配", "外站匹配中收到帧", "外站匹配取消"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("缺少诊断日志 %q: %s", want, out)
+		}
+	}
+	if !strings.Contains(out, `"code":7`) {
+		t.Fatalf("匹配帧未记录类型码: %s", out)
+	}
+	if !strings.Contains(out, `"reason":"cancelled"`) || !strings.Contains(out, `"elapsed"`) {
+		t.Fatalf("取消日志缺少reason/elapsed: %s", out)
+	}
+	for _, secret := range []string{secretUID, secretNick, secretBody, "secret-tid"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("日志泄露帧内容 %q: %s", secret, out)
+		}
 	}
 }
