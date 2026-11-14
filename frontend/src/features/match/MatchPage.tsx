@@ -10,9 +10,9 @@ import { useChat } from '../../lib/useChat'
 import { MessageList } from '../../components/MessageList'
 import { Composer } from '../../components/Composer'
 import { GlassPanel } from '../../components/GlassPanel'
+import { GradientAvatar } from '../../components/GradientAvatar'
 import { BlockConfirm } from '../../components/BlockConfirm'
 import { ReportDialog } from '../../components/ReportDialog'
-import { codename } from '../../lib/codename'
 import { WaitingOrb } from './WaitingOrb'
 
 /** 排队满 30 秒且有硬条件时给出放宽建议（how.md 2.3）。 */
@@ -235,7 +235,11 @@ export default function MatchPage() {
     )
   }
 
-  const peerName = state.conversationId ? codename(state.conversationId, peer?.memberId ?? 0) : '对方'
+  // 1v1 匹配按产品决定显示对方的真实昵称（不再用「匿名·XXXX」代号）。
+  // match.found 的 peer 优先；断线恢复（resume）时没有 match.found，退回会话详情里的 peer。
+  const peerNickname = peer?.nickname?.trim() || chat.peer?.nickname?.trim() || ''
+  const peerName = peerNickname || '对方'
+  const peerAvatarSeed = peer?.avatarSeed || chat.peer?.avatarSeed || 'anonymous'
 
   return (
     <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
@@ -251,6 +255,7 @@ export default function MatchPage() {
             >
               ←
             </button>
+            <GradientAvatar seed={peerAvatarSeed} size={28} />
             <div className="min-w-0">
               <div className="truncate text-sm font-medium text-night-ink">{peerName}</div>
               {chips.length > 0 && (
@@ -285,8 +290,6 @@ export default function MatchPage() {
         <MessageList
           messages={chat.messages}
           selfMemberId={selfMemberId}
-          conversationId={state.conversationId}
-          anonMode
           typing={chat.typing}
         />
         <Composer onSend={chat.send} onTyping={chat.sendTyping} onSendMedia={chat.sendMedia} />

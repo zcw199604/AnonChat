@@ -16,7 +16,7 @@
 | 屏蔽 | `Block` | 用户之间互相不可见、不再匹配（单向记录、双向生效） | 拉黑（仅界面文案） |
 | 封禁 | `Ban` | 管理员对身份、IP 或实名账号的处罚（可临时/永久） | — |
 | 匿名编号 | `public_code` / `publicCode` | 10 位 Crockford Base32 的身份对外编号，可复制给客服；换身份时重新生成 | 用户 ID、账号 |
-| 匿名代号 | `codename` | 1v1 会话内按 `sha256(conversationId+':'+memberId)` 前 4 位生成的「匿名·XXXX」，同一会话内稳定、跨会话不可关联 | 昵称（1v1 场景不展示） |
+| 匿名代号 | `codename` | 1v1 会话内按 `sha256(conversationId+':'+memberId)` 前 4 位生成的「匿名·XXXX」；昵称改为透传真名后已停用，仅保留历史实现 | 昵称（1v1 现在显示真实昵称） |
 | 资料 | `Profile` | 性别、年龄、省份与是否公开、标签、清流模式 | 个人信息（界面上称「资料」） |
 | 匹配偏好 | `matchPrefs` | VIP 权益：按性别筛选、同省匹配；非 VIP 由服务端忽略 | 高级筛选 |
 | 清流模式 | `cleanMode` | 只与同样开启清流模式的用户配对 | 纯净模式 |
@@ -81,7 +81,7 @@
 | 兜底阶段 | `phaseFallback` | 外站阶段结束后等待 bot 的阶段 | — |
 | 外站会话 | `external_conversations` | 本站用户与外站对方组成的 `match` 会话 | 桥接会话 |
 | 影子身份 | `external_peers.identity_id` / `peerIdent` | 同一外站用户在本站复用的匿名身份，用于消息管线与屏蔽 | 虚拟用户、外站 bot |
-| 外站账号 | `external_bindings` | 本站匿名身份在某个外站的绑定账号；昵称独立随机生成 | — |
+| 外站账号 | `external_bindings` | 本站匿名身份在某个外站的绑定账号；出站昵称优先用本站昵称，绑定昵称作为回退（含数字时） | — |
 | Bridge | `external.Bridge` | 外站连接、帧翻译及消息/媒体中转模块 | — |
 | 媒体来源 | `media_items.source` | `library` 后台媒体库、`user` 用户上传、`external` 外站下载 | — |
 | 媒体归属 | `owner_identity_id` | 用户媒体的上传身份；library/external 来源为空。用户仅能发送自己的 `user` 媒体 | — |

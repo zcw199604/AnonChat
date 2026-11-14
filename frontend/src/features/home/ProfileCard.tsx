@@ -26,6 +26,8 @@ interface ProfileCardProps {
 export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProps) {
   const me = useIdentityStore((s) => s.me)
   const publicCode = useIdentityStore((s) => s.publicCode)
+  // 自己的随机中文昵称（形如「迷路的水獭」）：优先父组件传入，其次 store 快照。
+  const storeNickname = useIdentityStore((s) => s.nickname)
   const setToast = useUiStore((s) => s.setToast)
 
   const [collapsed, setCollapsed] = useState<boolean>(() => {
@@ -122,16 +124,20 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
     )
   }
 
-  const maskedCode = `${publicCode.slice(0, 2)}****${publicCode.slice(-4)}`
+  const nickname = propNickname.trim() || storeNickname.trim()
+  // 匿名编号只用于联系客服，缩小为昵称下方的灰字（打码展示，避免截屏泄露完整编号）。
+  const maskedCode = publicCode ? `${publicCode.slice(0, 2)}****${publicCode.slice(-4)}` : ''
 
   return (
     <Card className="flex h-full flex-col gap-4 p-4 sm:gap-5 sm:p-5">
-      {/* 头像行：匿名编号、复制、分享、折叠 */}
+      {/* 头像行：昵称、匿名编号（客服用途）、复制、分享、折叠 */}
       <div className="flex items-center gap-3">
-        <GradientAvatar seed={me.avatarSeed || 'anonymous'} size={48} label={propNickname} />
+        <GradientAvatar seed={me.avatarSeed || 'anonymous'} size={48} label={nickname} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-mono text-sm text-lobby-ink">{maskedCode || '—'}</span>
+            <span className="truncate text-sm font-medium text-lobby-ink" data-testid="profile-nickname">
+              {nickname || '—'}
+            </span>
             <button
               type="button"
               aria-label="复制匿名编号"
@@ -149,6 +155,7 @@ export function ProfileCard({ onMatch, nickname: propNickname }: ProfileCardProp
               ⤴
             </button>
           </div>
+          <div className="truncate font-mono text-[11px] text-lobby-sub">{maskedCode || '—'}</div>
         </div>
         <ResetIdentityConfirm className="rounded-sm px-1 text-sm text-lobby-sub transition duration-150 ease-out hover:text-brand" label="🔄" ariaLabel="换个身份" />
         <button

@@ -18,14 +18,18 @@ import (
 	"github.com/anonchat/anonchat/backend/internal/store"
 )
 
-// match.found 的 peer 负载（how.md 3.4：去掉了 nickname 和 avatarSeed）。
+// match.found 的 peer 负载。
+// 1v1 场景透传对方的真实昵称与头像种子（how.md 3.4 已按产品决定调整）：
+// 匹配成功后双方直接以真实昵称称呼，前端不再使用「匿名·XXXX」代号。
 type peerInfo struct {
-	MemberID  int32    `json:"memberId"`
-	Gender    *string  `json:"gender"`
-	Age       *int16   `json:"age"`
-	Province  *string  `json:"province"`
-	Tags      []string `json:"tags"`
-	CleanMode bool     `json:"cleanMode"`
+	MemberID   int32    `json:"memberId"`
+	Nickname   string   `json:"nickname"`
+	AvatarSeed string   `json:"avatarSeed"`
+	Gender     *string  `json:"gender"`
+	Age        *int16   `json:"age"`
+	Province   *string  `json:"province"`
+	Tags       []string `json:"tags"`
+	CleanMode  bool     `json:"cleanMode"`
 }
 
 // matchFoundPayload 是 match.found 的负载。
@@ -220,9 +224,9 @@ func (s *Service) onPair(ae, be *queueEntry) error {
 	s.hub.SubscribeIdentity(a.ID, conv.ID)
 	s.hub.SubscribeIdentity(b.ID, conv.ID)
 
-	// members[0] 是 a，members[1] 是 b。
-	s.sendFound(a.ID, conv.ID, members[1].MemberID, be.ic.Profile)
-	s.sendFound(b.ID, conv.ID, members[0].MemberID, ae.ic.Profile)
+	// members[0] 是 a，members[1] 是 b。peer 携带对方的真实昵称与头像种子。
+	s.sendFound(a.ID, conv.ID, members[1].MemberID, be.ic.Profile, b.Nickname, b.AvatarSeed)
+	s.sendFound(b.ID, conv.ID, members[0].MemberID, ae.ic.Profile, a.Nickname, a.AvatarSeed)
 	return nil
 }
 
@@ -260,26 +264,29 @@ func (s *Service) onBotPair(entry *queueEntry, cand *BotCandidate) error {
 	s.hub.SubscribeIdentity(user.ID, conv.ID)
 	s.hub.SubscribeIdentity(botIdent.ID, conv.ID)
 
-	// 用户收到的 match.found：peer 字段由 bot 身份的公开资料按同一规则构造。
-	s.sendFound(user.ID, conv.ID, members[1].MemberID, cand.Profile)
+	// 用户收到的 match.found：peer 字段由 bot 身份的公开资料按同一规则构造，
+	// 昵称与头像种子同样取自 bot 身份。
+	s.sendFound(user.ID, conv.ID, members[1].MemberID, cand.Profile, botIdent.Nickname, botIdent.AvatarSeed)
 	if s.botProvider != nil {
 		s.botProvider.BotMatched(conv.ID, botIdent.ID)
 	}
 	return nil
 }
 
-// sendFound 向某身份的全部连接推送 match.found（只含对方的公开资料）。
-func (s *Service) sendFound(identityID, convID pgtype.UUID, peerMemberID int32, prof PrefProfile) {
+// sendFound 向某身份的全部连接推送 match.found：公开资料 + 对方的真实昵称与头像种子。
+func (s *Service) sendFound(identityID, convID pgtype.UUID, peerMemberID int32, prof PrefProfile, peerNickname, peerAvatarSeed string) {
 	pub := profile.NewPublicProfile(prof.Gender, prof.Age, prof.Province, prof.ProvincePublic, prof.Tags, prof.CleanMode)
 	env, err := realtime.NewEnvelope(realtime.TypeMatchFound, "", matchFoundPayload{
 		ConversationID: convID.String(),
 		Peer: peerInfo{
-			MemberID:  peerMemberID,
-			Gender:    pub.Gender,
-			Age:       pub.Age,
-			Province:  pub.Province,
-			Tags:      pub.Tags,
-			CleanMode: pub.CleanMode,
+			MemberID:   peerMemberID,
+			Nickname:   peerNickname,
+			AvatarSeed: peerAvatarSeed,
+			Gender:     pub.Gender,
+			Age:        pub.Age,
+			Province:   pub.Province,
+			Tags:       pub.Tags,
+			CleanMode:  pub.CleanMode,
 		},
 	})
 	if err != nil {
@@ -483,7 +490,7 @@ func (s *Service) ExternalFound(ctx context.Context, userID pgtype.UUID, attempt
 	publish := func() {
 		s.hub.SubscribeIdentity(userID, conv.ID)
 		s.hub.SubscribeIdentity(peer.IdentityID, conv.ID)
-		s.sendFound(userID, conv.ID, members[1].MemberID, peer.Profile)
+		s.sendFound(userID, conv.ID, members[1].MemberID, peer.Profile, peer.Nickname, peer.AvatarSeed)
 	}
 	if hooks.Activate == nil || !hooks.Activate(conv.ID, publish) {
 		endCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)

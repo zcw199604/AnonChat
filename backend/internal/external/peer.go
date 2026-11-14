@@ -33,6 +33,8 @@ func (s *PeerStore) Resolve(ctx context.Context, provider, remoteUID string, p P
 		return match.ExternalPeer{}, err
 	}
 	q := store.New(tx)
+	// 外站昵称在我方作为影子身份的昵称显示，统一清洗后落库。
+	nickname := sanitizeExternalPeerNickname(p.Nickname)
 	row, err := q.GetExternalPeer(ctx, store.GetExternalPeerParams{Provider: provider, RemoteUid: remoteUID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		tokenHash := make([]byte, 32)
@@ -42,7 +44,7 @@ func (s *PeerStore) Resolve(ctx context.Context, provider, remoteUID string, p P
 		var ident store.Identity
 		// 与身份服务一样，对数据库随机公开编号的唯一冲突作有限重试。
 		for range 3 {
-			ident, err = q.CreateIdentity(ctx, store.CreateIdentityParams{TokenHash: tokenHash, Nickname: identity.GenerateNickname(), AvatarSeed: identity.GenerateAvatarSeed()})
+			ident, err = q.CreateIdentity(ctx, store.CreateIdentityParams{TokenHash: tokenHash, Nickname: nickname, AvatarSeed: identity.GenerateAvatarSeed()})
 			if !errors.Is(err, pgx.ErrNoRows) {
 				break
 			}
@@ -62,10 +64,15 @@ func (s *PeerStore) Resolve(ctx context.Context, provider, remoteUID string, p P
 	if _, err := q.UpdateIdentityProfile(ctx, store.UpdateIdentityProfileParams{ID: row.IdentityID, Gender: mapped.Gender, Age: mapped.Age, Province: mapped.Province, ProvincePublic: mapped.ProvincePublic, Tags: []string{}, MatchGender: "any"}); err != nil {
 		return match.ExternalPeer{}, err
 	}
+	// 已存在的影子身份同样每次按外站最新昵称刷新，保证我方显示对外站改名可见。
+	ident, err := q.UpdateIdentityNickname(ctx, store.UpdateIdentityNicknameParams{ID: row.IdentityID, Nickname: nickname})
+	if err != nil {
+		return match.ExternalPeer{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return match.ExternalPeer{}, err
 	}
-	return match.ExternalPeer{IdentityID: row.IdentityID, Profile: mapped}, nil
+	return match.ExternalPeer{IdentityID: row.IdentityID, Profile: mapped, Nickname: ident.Nickname, AvatarSeed: ident.AvatarSeed}, nil
 }
 
 func mapPeerProfile(p PeerProfile) match.PrefProfile {

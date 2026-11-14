@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/anonchat/anonchat/backend/internal/external/wanfeng"
-	"github.com/anonchat/anonchat/backend/internal/identity"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -40,13 +39,9 @@ func (p *wanfengProvider) open(ctx context.Context, l *link) (session, error) {
 	if _, err := api.Session(ctx); err != nil {
 		return nil, errors.Join(ErrWanfengHandshake, err)
 	}
-	nickname := ""
-	if binding != nil {
-		nickname = externalNickname(binding.Nickname)
-	}
-	if nickname == "" {
-		nickname = identity.GeneratePlainNickname()
-	}
+	// 出站昵称透传：优先用我方用户当前的本站昵称，清洗后不可用时回退到绑定昵称，
+	// 都不可用则随机生成（outboundNickname 内部兜底）。
+	nickname := outboundNickname(l.req.Identity, bindingNickname(binding))
 	profile := wanfeng.Profile{Nickname: nickname, Gender: l.req.Context.Profile.Gender}
 	if age := l.req.Context.Profile.Age; age != nil {
 		profile.Age = int(*age)
@@ -72,6 +67,14 @@ func (p *wanfengProvider) open(ctx context.Context, l *link) (session, error) {
 			p.b.commandFailed(l, err, cmd.Media != nil)
 		},
 	})
+}
+
+// bindingNickname 返回晚风绑定里保存的昵称；绑定不存在时返回空串。
+func bindingNickname(b *wanfeng.Binding) string {
+	if b == nil {
+		return ""
+	}
+	return b.Nickname
 }
 
 type wanfengCommandClient interface {

@@ -59,7 +59,7 @@ flowchart LR
 
 ## 匿名代号与资料可见性
 
-- 1v1 场景（match / bottle / private）不显示昵称：消息 `nickname` 由服务端置空，前端用 `codename(conversationId, memberId)` 计算「匿名·XXXX」；自己显示「我」。
+- 1v1 场景（match / bottle / private）同样显示真实昵称与头像：消息 `nickname`/`avatarSeed` 由服务端下发真实值，`match.found.peer` 也带 `nickname`/`avatarSeed`；前端不再用 `codename(conversationId, memberId)` 计算「匿名·XXXX」，自己仍显示「我」。
 - 房间聊天继续显示昵称（群聊需要称呼）；故事剧场显示角色名。
 - 资料只在 `GET /api/identity/me`（自己）与 `match.found.peer`（对方的公开资料）中出现；省份仅在 `province_public=true` 时输出，性别为 `secret` 时输出 `null`。
 

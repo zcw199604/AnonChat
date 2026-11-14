@@ -141,14 +141,15 @@ func TestWSEndToEndSubscribeSend(t *testing.T) {
 	}
 	var payload struct {
 		Message struct {
-			Body     string `json:"body"`
-			Nickname string `json:"nickname"`
+			Body       string `json:"body"`
+			Nickname   string `json:"nickname"`
+			AvatarSeed string `json:"avatarSeed"`
 		} `json:"message"`
 	}
 	_ = json.Unmarshal(newEnv.Data, &payload)
-	// match 会话属于 1v1：nickname 按 how.md 3.6 置空，正文不变。
-	if payload.Message.Body != "你好呀" || payload.Message.Nickname != "" {
-		t.Errorf("广播内容不符（1v1 的 nickname 应为空）: %+v", payload.Message)
+	// match 会话属于 1v1：现在同样下发发送者真实昵称与头像种子，正文不变。
+	if payload.Message.Body != "你好呀" || payload.Message.Nickname != b.Nickname || payload.Message.AvatarSeed != b.AvatarSeed {
+		t.Errorf("广播内容不符（1v1 应透传真实昵称与头像）: %+v", payload.Message)
 	}
 }
 

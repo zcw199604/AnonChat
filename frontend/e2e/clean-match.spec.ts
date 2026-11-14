@@ -1,7 +1,7 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { openHome, sendChat } from './helpers'
 
-test('H 双清流配对：看到匿名代号与对方资料芯片', async ({ browser }) => {
+test('H 双清流配对：看到对方真实昵称与资料芯片', async ({ browser }) => {
   const a = await openHome(browser)
   const b = await openHome(browser)
 
@@ -20,9 +20,10 @@ test('H 双清流配对：看到匿名代号与对方资料芯片', async ({ bro
   await a.getByTestId('match-button').click()
   await b.getByTestId('match-button').click()
 
-  // 双方进入会话：显示匿名代号「匿名·XXXX」。
-  await expect(a.getByText(/^匿名·[0-9A-F]{4}$/)).toBeVisible({ timeout: 20000 })
-  await expect(b.getByText(/^匿名·[0-9A-F]{4}$/)).toBeVisible({ timeout: 20000 })
+  // 双方进入会话：显示对方的真实昵称（形如「迷路的水獭」，由 match.found 的 peer.nickname 带出）。
+  const peerNicknameOf = (page: Page) => page.locator('header').getByText(/^\S+的\S+$/)
+  await expect(peerNicknameOf(a)).toBeVisible({ timeout: 20000 })
+  await expect(peerNicknameOf(b)).toBeVisible({ timeout: 20000 })
 
   // 对方资料芯片：年龄与省份（省份仅在对方公开时出现）。
   await expect(a.locator('header').getByText('31', { exact: true })).toBeVisible({ timeout: 10000 })

@@ -87,7 +87,8 @@ func matchStart(t *testing.T, c *websocket.Conn) {
 	send(t, c, map[string]any{"t": realtime.TypeMatchStart, "id": "start", "d": map[string]any{}})
 }
 
-func mustFound(t *testing.T, c *websocket.Conn) string {
+// mustFoundEnv 读取 match.found 信封（自动跳过 match.waiting）。
+func mustFoundEnv(t *testing.T, c *websocket.Conn) realtime.Envelope {
 	t.Helper()
 	var env realtime.Envelope
 	for i := 0; i < 5; i++ {
@@ -100,13 +101,21 @@ func mustFound(t *testing.T, c *websocket.Conn) string {
 	if env.Type != realtime.TypeMatchFound {
 		t.Fatalf("应为 match.found, 实际 %q (%s)", env.Type, env.Data)
 	}
-	// how.md 3.4：peer 里去掉了 nickname 与 avatarSeed，只保留 memberId 与公开资料。
+	return env
+}
+
+func mustFound(t *testing.T, c *websocket.Conn) string {
+	t.Helper()
+	env := mustFoundEnv(t, c)
+	// match.found 现在携带对方的真实昵称与头像种子（1v1 透传）。
 	var p struct {
 		ConversationID string `json:"conversationId"`
 		Peer           struct {
-			MemberID int32    `json:"memberId"`
-			Gender   *string  `json:"gender"`
-			Tags     []string `json:"tags"`
+			MemberID   int32    `json:"memberId"`
+			Nickname   string   `json:"nickname"`
+			AvatarSeed string   `json:"avatarSeed"`
+			Gender     *string  `json:"gender"`
+			Tags       []string `json:"tags"`
 		} `json:"peer"`
 	}
 	if err := json.Unmarshal(env.Data, &p); err != nil {
@@ -115,16 +124,32 @@ func mustFound(t *testing.T, c *websocket.Conn) string {
 	if p.ConversationID == "" || p.Peer.MemberID == 0 {
 		t.Fatalf("match.found 载荷不全: %s", env.Data)
 	}
+	if p.Peer.Nickname == "" || p.Peer.AvatarSeed == "" {
+		t.Fatalf("match.found 应带对方的昵称与头像种子: %s", env.Data)
+	}
 	// 防泄漏：事件负载里不得出现任何身份标识字段（how.md 3.8）。
 	for _, forbidden := range []string{"identity_id", "identityId", "token", "ip", "account", "phone"} {
 		if strings.Contains(string(env.Data), `"`+forbidden+`"`) {
 			t.Fatalf("match.found 出现禁止字段 %q: %s", forbidden, env.Data)
 		}
 	}
-	if strings.Contains(string(env.Data), "nickname") || strings.Contains(string(env.Data), "avatarSeed") {
-		t.Fatalf("match.found 不应包含 nickname/avatarSeed: %s", env.Data)
-	}
 	return p.ConversationID
+}
+
+// readFoundPayload 读取 match.found 并返回 conversationId 与 peer 昵称/头像种子。
+func readFoundPayload(t *testing.T, env realtime.Envelope) (string, string, string) {
+	t.Helper()
+	var p struct {
+		ConversationID string `json:"conversationId"`
+		Peer           struct {
+			Nickname   string `json:"nickname"`
+			AvatarSeed string `json:"avatarSeed"`
+		} `json:"peer"`
+	}
+	if err := json.Unmarshal(env.Data, &p); err != nil {
+		t.Fatalf("解析 match.found 失败: %v", err)
+	}
+	return p.ConversationID, p.Peer.Nickname, p.Peer.AvatarSeed
 }
 
 func pairTwo(t *testing.T, srv *httptest.Server, tokA, tokB string) (*websocket.Conn, *websocket.Conn, string) {
@@ -142,6 +167,35 @@ func pairTwo(t *testing.T, srv *httptest.Server, tokA, tokB string) (*websocket.
 		t.Fatalf("双方会话不一致: %s vs %s", convA, convB)
 	}
 	return wsA, wsB, convA
+}
+
+// TestMatchFoundCarriesPeerIdentity 验证 1v1 匹配透传对方真实昵称与头像种子（不再匿名）。
+func TestMatchFoundCarriesPeerIdentity(t *testing.T) {
+	pool := testutil.MustPool(t)
+	testutil.Truncate(t, pool)
+	env := testutil.MustEnv(t, pool, testutil.Config{MatchRelaxAfter: 50 * time.Millisecond})
+	_, tokA := mkIdentity(t, pool, "alice")
+	_, tokB := mkIdentity(t, pool, "bob")
+
+	wsA := connectHello(t, env.Server, tokA)
+	wsB := connectHello(t, env.Server, tokB)
+	matchStart(t, wsA)
+	if e := read(t, wsA, 3*time.Second); e.Type != realtime.TypeMatchWaiting {
+		t.Fatalf("A 应收到 waiting, 实际 %q", e.Type)
+	}
+	matchStart(t, wsB)
+
+	convA, nickA, seedA := readFoundPayload(t, mustFoundEnv(t, wsA))
+	convB, nickB, seedB := readFoundPayload(t, mustFoundEnv(t, wsB))
+	if convA != convB {
+		t.Fatalf("双方会话不一致: %s vs %s", convA, convB)
+	}
+	if nickA != "bob" || seedA != "seed-bob" {
+		t.Errorf("A 看到的 peer = %q/%q, 期望 bob/seed-bob", nickA, seedA)
+	}
+	if nickB != "alice" || seedB != "seed-alice" {
+		t.Errorf("B 看到的 peer = %q/%q, 期望 alice/seed-alice", nickB, seedB)
+	}
 }
 
 func TestMatchFoundAndChat(t *testing.T) {

@@ -12,7 +12,6 @@ import { MessageList } from '../../components/MessageList'
 import { Composer } from '../../components/Composer'
 import { GlassPanel } from '../../components/GlassPanel'
 import { Card } from '../../components/Card'
-import { codename } from '../../lib/codename'
 
 /** 私密链接会话：进入会话后切换为暗色玻璃（how.md 1.3）。 */
 export default function PrivateJoinPage() {
@@ -119,7 +118,12 @@ export default function PrivateJoinPage() {
   }
 
   if (conversationId) {
-    const name = codename(conversationId, chat.peer?.memberId ?? 0)
+    // 1v1 会话显示对方真实昵称：优先会话详情里的 peer，其次最近一条对方消息，最后回退「对方」。
+    const peerNickname =
+      chat.peer?.nickname?.trim() ||
+      [...chat.messages].reverse().find((m) => m.memberId !== chat.myMemberId)?.nickname?.trim() ||
+      ''
+    const name = peerNickname || '对方'
     return (
       <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
         <GlassPanel className="h-full rounded-none md:rounded-panel">
@@ -141,8 +145,6 @@ export default function PrivateJoinPage() {
           <MessageList
             messages={chat.messages}
             selfMemberId={chat.myMemberId}
-            conversationId={conversationId}
-            anonMode
             typing={chat.typing}
           />
           <Composer onSend={chat.send} onTyping={chat.sendTyping} onSendMedia={chat.sendMedia} />

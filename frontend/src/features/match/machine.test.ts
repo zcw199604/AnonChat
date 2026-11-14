@@ -8,17 +8,28 @@ describe('matchReducer', () => {
   it('取消回到空闲', () => {
     expect(matchReducer({ status: 'waiting' }, { type: 'cancel' }).status).toBe('idle')
   })
-  it('匹配成功进入聊天中并记录对方的公开资料（不再含昵称）', () => {
+  it('匹配成功进入聊天中并记录对方的公开资料（含真实昵称与头像种子）', () => {
     const s = matchReducer(initialMatchState, {
       type: 'found',
       conversationId: 'c1',
-      peer: { memberId: 2, gender: 'female', age: 24, province: '浙江', tags: ['音乐'], cleanMode: true },
+      peer: {
+        memberId: 2,
+        nickname: '迷路的水獭',
+        avatarSeed: 'seed-2',
+        gender: 'female',
+        age: 24,
+        province: '浙江',
+        tags: ['音乐'],
+        cleanMode: true,
+      },
     })
     expect(s.status).toBe('chatting')
     expect(s.conversationId).toBe('c1')
     expect(s.peer?.memberId).toBe(2)
     expect(s.peer?.province).toBe('浙江')
-    expect(s.peer && 'nickname' in s.peer).toBe(false)
+    // 1v1 场景透传对方真实昵称与头像种子（不再用「匿名·XXXX」代号）。
+    expect(s.peer?.nickname).toBe('迷路的水獭')
+    expect(s.peer?.avatarSeed).toBe('seed-2')
   })
   it('请求下一个时保留会话，等待服务端确认；限流拒绝不会丢失聊天', () => {
     const chatting = { status: 'chatting' as const, conversationId: 'c1', peer: { memberId: 2 } }

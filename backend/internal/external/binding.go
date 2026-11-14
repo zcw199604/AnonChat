@@ -95,7 +95,7 @@ func (s *BindingStore) Chat2019(ctx context.Context, id pgtype.UUID) (store.Exte
 		if _, err = rand.Read(uid); err != nil {
 			return store.ExternalBinding{}, err
 		}
-		row, err = q.UpsertExternalBinding(ctx, store.UpsertExternalBindingParams{IdentityID: id, Provider: "chat2019", RemoteUid: hex.EncodeToString(uid), Nickname: identity.GeneratePlainNickname()})
+		row, err = q.UpsertExternalBinding(ctx, store.UpsertExternalBindingParams{IdentityID: id, Provider: "chat2019", RemoteUid: hex.EncodeToString(uid), Nickname: identity.GenerateNickname()})
 	}
 	if err != nil {
 		return store.ExternalBinding{}, err

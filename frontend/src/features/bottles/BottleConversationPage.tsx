@@ -10,9 +10,8 @@ import { Composer } from '../../components/Composer'
 import { GlassPanel } from '../../components/GlassPanel'
 import { BlockConfirm } from '../../components/BlockConfirm'
 import { ReportDialog } from '../../components/ReportDialog'
-import { codename } from '../../lib/codename'
 
-/** 匿名信会话（how.md 2.3）：暗色玻璃，1v1 只显示匿名代号。 */
+/** 匿名信会话（how.md 2.3）：暗色玻璃，1v1 按产品决定显示对方真实昵称。 */
 export default function BottleConversationPage() {
   const { conversationId } = useParams()
   const nav = useNavigate()
@@ -37,6 +36,18 @@ export default function BottleConversationPage() {
   const peerMemberId = useMemo(() => {
     const m = chat.messages.find((x) => x.memberId !== chat.myMemberId)
     return m?.memberId ?? chat.peer?.memberId ?? null
+  }, [chat.messages, chat.myMemberId, chat.peer])
+
+  const peerNickname = useMemo(() => {
+    const fromPeer = chat.peer?.nickname?.trim()
+    if (fromPeer) return fromPeer
+    for (let i = chat.messages.length - 1; i >= 0; i--) {
+      const m = chat.messages[i]
+      if (m.memberId === chat.myMemberId) continue
+      const nick = m.nickname?.trim()
+      if (nick) return nick
+    }
+    return null
   }, [chat.messages, chat.myMemberId, chat.peer])
 
   const peerMessages = chat.messages
@@ -83,7 +94,9 @@ export default function BottleConversationPage() {
     )
   }
 
-  const name = conversationId ? codename(conversationId, peerMemberId ?? 0) : '对方'
+  // 1v1 会话显示对方真实昵称：优先会话详情里的 peer，其次最近一条对方消息，最后回退「对方」。
+  // （conversationId 为空时不渲染会话界面，这里无需再判空。）
+  const name = peerNickname ?? '对方'
 
   return (
     <main className="mx-auto flex h-screen max-w-[760px] flex-col p-0 md:p-4">
@@ -121,8 +134,6 @@ export default function BottleConversationPage() {
         <MessageList
           messages={chat.messages}
           selfMemberId={chat.myMemberId}
-          conversationId={conversationId}
-          anonMode
           typing={chat.typing}
         />
         <Composer onSend={chat.send} onTyping={chat.sendTyping} onSendMedia={chat.sendMedia} />

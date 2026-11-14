@@ -38,7 +38,7 @@
 |---|---|---|
 | GET | `/api/conversations` | 我参与进行中的会话（含未读数，不含 room） |
 | GET | `/api/conversations/{id}` | 会话详情 `{id,kind,burnAfterRead,endedAt,endReason,myMemberId,peer?}` |
-| GET | `/api/conversations/{id}/messages` | 历史分页 `before/after/limit`；1v1 会话 `nickname` 恒为空串，故事会话 `nickname` 为角色名 |
+| GET | `/api/conversations/{id}/messages` | 历史分页 `before/after/limit`；1v1 会话与房间会话一样下发真实 `nickname`，故事会话 `nickname` 为角色名；`avatarSeed` 在 1v1 同样下发 |
 | POST | `/api/conversations/{id}/block` | 1v1 屏蔽对方并结束会话 |
 | POST | `/api/conversations/{id}/members/{memberId}/block` | 房间屏蔽成员 |
 | POST | `/api/reports` | 举报 `{conversationId,memberId,messageIds[],reason,note?}` → `{id}` |
@@ -184,8 +184,8 @@
 - 客户端每 25 秒发 `ping`；服务端 60 秒收不到任何帧则断开；单帧 >16KB 断开（1009）；写缓冲满被视为慢客户端。
 - `msg.send`：服务端先回 `ack {messageId,createdAt}` 再广播 `msg.new`；重复 `clientMsgId` 幂等返回同一 `messageId` 且不重复广播。
 - `msg.send.d`：`{conversationId,clientMsgId,kind,body,mediaId?}`。用户可发 `text`，或在 `match/bottle/private` 发送 `image/video`；媒体必须先上传，`mediaId` 对应 `source=user`、owner 为发送者且 kind 一致。媒体正文可以为空；他人/不存在/非 user 来源/类型不一致返回 `invalid_request`「媒体不存在或不属于你」，room/story 返回「该会话不支持发送媒体」。媒体在消息插入前失效导致外键失败时返回 `invalid_request`「媒体已失效，请重新上传」。
-- `msg.new.message.nickname`：房间会话为真实昵称；故事会话为角色名；1v1 会话（match/bottle/private）为空字符串——前端在 1v1 场景改用匿名代号 `匿名·XXXX`（`sha256(conversationId+':'+memberId)` 前 4 位，见 `frontend/src/lib/codename.ts`）。
-- `match.found` 的负载：`{conversationId, peer:{memberId,gender,age,province,tags,cleanMode}}`（**不含** nickname 与 avatarSeed；gender 为 secret 时输出 null，province 仅在对方公开时输出）。bot 兜底配对时 `peer` 用同一函数按 bot 身份的公开资料构造，字段集合与真人完全相同。
+- `msg.new.message.nickname`：房间会话与 1v1 会话（match/bottle/private）均为发送者的真实昵称；故事会话为角色名。1v1 同样下发 `avatarSeed`，前端直接显示昵称与头像，「匿名·XXXX」代号（`codename.ts`）不再使用。
+- `match.found` 的负载：`{conversationId, peer:{memberId,nickname,avatarSeed,gender,age,province,tags,cleanMode}}`（1v1 透传对方的真实昵称与头像种子；gender 为 secret 时输出 null，province 仅在对方公开时输出）。bot 兜底配对时 `peer` 用同一函数按 bot 身份的资料构造，字段集合与真人完全相同；外站配对时 `peer.nickname` 为影子身份昵称（即外站对方的昵称）。
 - `msg.new.message.mediaUrl`：媒体消息（`kind=image|video`）才有，值为 `/api/media/<id>`；文本消息不带该字段。
 - `match.waiting` 的负载：`{filters:{cleanMode,gender,sameProvince}}`，即服务端最终生效的条件。
 - `match.ended`/`conv.ended` 的 reason ∈ `peer_left|peer_skipped|destroyed|expired|blocked|ended`。
@@ -217,7 +217,7 @@ V2 预留：`muted`、`captcha_required`。
 兜底时间是动态的：`BotProvider.FallbackAfter()` 只读引擎内存里的生效配置，匹配 goroutine 内不访问数据库；
 后台改完设置后立即按新值判断到期（到期时间 = max(enqueuedAt + after, 上次失败后的重试时间)）。
 
-开启外站后，本地匹配始终优先；其他在线身份数低于 `onlineThreshold` 或达到 `localWaitSeconds` 时开始外站阶段，外站超时/失败后进入兜底并立即尝试 bot（仍受 bot 可用性与重试间隔约束），不再使用 bot「匹配时间」决定首次兜底时机。匹配结果与用户侧会话消息不增加 provider 或影子身份标识；对外仅发送随机外站昵称、性别及已设置的年龄，不发送本站昵称、IP 或省份。
+开启外站后，本地匹配始终优先；其他在线身份数低于 `onlineThreshold` 或达到 `localWaitSeconds` 时开始外站阶段，外站超时/失败后进入兜底并立即尝试 bot（仍受 bot 可用性与重试间隔约束），不再使用 bot「匹配时间」决定首次兜底时机。匹配结果与用户侧会话消息不增加 provider 或影子身份标识；发往外站的昵称优先用我方用户当前的本站昵称（去掉 `#编号` 后缀，含 ASCII 数字则回退到绑定里保存的昵称，再不行随机生成，因为 chat2019 会拒绝含过多数字的昵称），另外只发送性别与已设置的年龄，不发送 IP 或省份。外站对方的昵称会清洗后写入其影子身份，作为我方显示名。
 
 ## 可配置限流规则
 

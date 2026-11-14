@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { GradientAvatar } from './GradientAvatar'
 import { Bubble } from './Bubble'
 import { TypingDots } from './TypingDots'
-import { codename } from '../lib/codename'
+import { senderLabel } from './senderLabel'
 
 export type MessageState = 'sending' | 'sent' | 'failed'
 
@@ -27,19 +27,13 @@ interface MessageListProps {
   onRetry?: (id: number) => void
   onReachTop?: () => void
   typing?: boolean
-  /** 会话 ID：1v1 场景用它计算匿名代号。 */
-  conversationId?: string | null
-  /**
-   * 是否用匿名代号替代昵称（match / bottle / private 为 true；房间为 false；
-   * 故事会话由服务端下发角色名，保持 false）。
-   */
-  anonMode?: boolean
 }
 
 /**
  * 消息列表：自己靠右、纯文本渲染、发送状态、上翻加载、焚毁倒计时、正在输入提示。
- * 1v1 场景不显示昵称，改为显示匿名代号；自己在 1v1 场景显示为「我」。
+ * 1v1 场景（match / bottle / private）按产品决定直接显示发送者的真实昵称，自己不显示标签。
  */
+
 /** 媒体内容：图片懒加载并支持点击查看原图，视频用原生播放器（支持进度条拖动）。 */
 function MediaContent({ kind, mediaUrl }: { kind: string; mediaUrl?: string }) {
   if (!mediaUrl) {
@@ -74,8 +68,6 @@ export function MessageList({
   onRetry,
   onReachTop,
   typing,
-  conversationId,
-  anonMode,
 }: MessageListProps) {
   const ref = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
@@ -97,12 +89,6 @@ export function MessageList({
     if (el.scrollTop < 30) onReachTop?.()
   }
 
-  function label(m: DisplayMessage, self: boolean): string {
-    if (!anonMode) return m.nickname
-    if (self) return '我'
-    return codename(conversationId ?? '', m.memberId)
-  }
-
   return (
     <div
       ref={ref}
@@ -121,7 +107,7 @@ export function MessageList({
             <GradientAvatar seed={m.avatarSeed || 'anonymous'} size={28} />
             <div className={`flex max-w-[85%] flex-col gap-1 ${self ? 'items-end text-right' : ''}`}>
               {!self && (
-                <span className="text-[11px] text-night-sub">{label(m, self)}</span>
+                <span className="text-[11px] text-night-sub">{senderLabel(m.nickname, self)}</span>
               )}
               {m.kind === 'system' ? (
                 <p className="whitespace-pre-wrap text-xs text-night-sub">{m.body}</p>

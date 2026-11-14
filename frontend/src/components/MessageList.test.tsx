@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MessageList } from './MessageList'
+import { senderLabel } from './senderLabel'
 import type { DisplayMessage } from './MessageList'
 
 function msg(partial: Partial<DisplayMessage> & { id: number }): DisplayMessage {
@@ -119,6 +120,35 @@ describe('MessageList', () => {
     )
     expect(screen.getByText('看我拍的')).toBeInTheDocument()
     expect(screen.getByAltText('图片消息')).toBeInTheDocument()
+  })
+
+  it('1v1 场景显示对方真实昵称，自己的消息不显示标签', () => {
+    render(
+      <MessageList
+        selfMemberId={1}
+        messages={[
+          msg({ id: 1, memberId: 1, nickname: '自己的昵称', body: 'mine' }),
+          msg({ id: 2, memberId: 2, nickname: '迷路的水獭', body: 'theirs' }),
+        ]}
+      />,
+    )
+    // 对方消息上方显示真实昵称，不再出现「匿名·XXXX」代号。
+    expect(screen.getByText('迷路的水獭')).toBeInTheDocument()
+    expect(screen.queryByText(/^匿名·/)).toBeNull()
+    // 自己的消息不带标签。
+    expect(screen.queryByText('自己的昵称')).toBeNull()
+  })
+
+  it('对方昵称为空时回退「对方」', () => {
+    render(<MessageList selfMemberId={1} messages={[msg({ id: 1, nickname: '' })]} />)
+    expect(screen.getByText('对方')).toBeInTheDocument()
+  })
+
+  it('senderLabel：自己显示「我」，对方显示昵称，昵称缺失回退「对方」', () => {
+    expect(senderLabel('迷路的水獭', false)).toBe('迷路的水獭')
+    expect(senderLabel('迷路的水獭', true)).toBe('我')
+    expect(senderLabel('', false)).toBe('对方')
+    expect(senderLabel('   ', false)).toBe('对方')
   })
 
   it('对方正在输入时显示提示', () => {

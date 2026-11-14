@@ -184,7 +184,7 @@ func TestExternalFoundCommitsBeforeActivateAndPublishesInsideHook(t *testing.T) 
 func TestExternalFoundRejectedActivationEndsAndRequeues(t *testing.T) {
 	f := externalIntegrationSetup(t)
 	var created pgtype.UUID
-	_, err := f.service.ExternalFound(ctx, f.user.ID, f.request.Attempt, match.ExternalPeer{IdentityID: f.peer.ID}, match.ExternalHooks{
+	_, err := f.service.ExternalFound(ctx, f.user.ID, f.request.Attempt, match.ExternalPeer{IdentityID: f.peer.ID, Nickname: f.peer.Nickname, AvatarSeed: f.peer.AvatarSeed}, match.ExternalHooks{
 		Activate: func(id pgtype.UUID, _ func()) bool { created = id; return false },
 	})
 	if !errors.Is(err, match.ErrActivationRejected) {
@@ -218,7 +218,7 @@ func TestExternalFoundFailureRequeueRespectsIntentAtSameTime(t *testing.T) {
 			result := make(chan error, 1)
 			injected := errors.New("creation failed")
 			go func() {
-				_, err := f.service.ExternalFound(ctx, f.user.ID, f.request.Attempt, match.ExternalPeer{IdentityID: f.peer.ID}, match.ExternalHooks{
+				_, err := f.service.ExternalFound(ctx, f.user.ID, f.request.Attempt, match.ExternalPeer{IdentityID: f.peer.ID, Nickname: f.peer.Nickname, AvatarSeed: f.peer.AvatarSeed}, match.ExternalHooks{
 					OnCreated: func(context.Context, pgx.Tx, pgtype.UUID) error {
 						close(entered)
 						<-release
@@ -305,7 +305,7 @@ func TestExternalFoundFailureRequeueRespectsIntentAtSameTime(t *testing.T) {
 			default:
 			}
 			if action == "reenter" {
-				if _, err := f.service.ExternalFound(ctx, f.user.ID, next.Attempt, match.ExternalPeer{IdentityID: f.peer.ID}, match.ExternalHooks{Activate: func(_ pgtype.UUID, publish func()) bool { publish(); return true }}); err != nil {
+				if _, err := f.service.ExternalFound(ctx, f.user.ID, next.Attempt, match.ExternalPeer{IdentityID: f.peer.ID, Nickname: f.peer.Nickname, AvatarSeed: f.peer.AvatarSeed}, match.ExternalHooks{Activate: func(_ pgtype.UUID, publish func()) bool { publish(); return true }}); err != nil {
 					t.Fatalf("失败回队污染新请求: %v", err)
 				}
 			}
@@ -326,7 +326,7 @@ func TestExternalFoundInvalidPeerRollsBackAndRequeues(t *testing.T) {
 
 func TestExternalFoundBoundsDatabaseContext(t *testing.T) {
 	f := externalIntegrationSetup(t)
-	_, err := f.service.ExternalFound(ctx, f.user.ID, f.request.Attempt, match.ExternalPeer{IdentityID: f.peer.ID}, match.ExternalHooks{
+	_, err := f.service.ExternalFound(ctx, f.user.ID, f.request.Attempt, match.ExternalPeer{IdentityID: f.peer.ID, Nickname: f.peer.Nickname, AvatarSeed: f.peer.AvatarSeed}, match.ExternalHooks{
 		OnCreated: func(ctx context.Context, _ pgx.Tx, _ pgtype.UUID) error {
 			deadline, ok := ctx.Deadline()
 			if !ok || time.Until(deadline) > 5*time.Second {
@@ -339,5 +339,9 @@ func TestExternalFoundBoundsDatabaseContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustFound(t, f.ws)
+	// 外站配对同样在 match.found 里透传影子身份（即外站对方）的昵称与头像种子。
+	_, nick, seed := readFoundPayload(t, mustFoundEnv(t, f.ws))
+	if nick != f.peer.Nickname || seed != f.peer.AvatarSeed || nick == "" {
+		t.Fatalf("外站 match.found 的 peer 昵称/头像 = %q/%q, 期望 %q/%q", nick, seed, f.peer.Nickname, f.peer.AvatarSeed)
+	}
 }

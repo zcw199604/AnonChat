@@ -301,7 +301,7 @@ func (s *Service) SendAs(ctx context.Context, in SendInput) (store.Message, bool
 	}
 
 	// 再广播给会话全部订阅连接，排除“屏蔽了发送者”的身份。
-	// 昵称按会话类型处理：房间保留昵称、故事用角色名、1v1 置空（前端显示匿名代号）。
+	// 昵称按会话类型处理：房间与 1v1 用真实昵称、故事用角色名；avatarSeed 在 1v1 同样下发。
 	env2, eerr := realtime.NewEnvelope(realtime.TypeMsgNew, "", msgNewPayload{
 		ConversationID: convID.String(),
 		Message: msgNewMessage{

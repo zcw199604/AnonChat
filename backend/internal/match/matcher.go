@@ -90,9 +90,12 @@ type ExternalMatcher interface {
 }
 
 // ExternalPeer 是 Bridge 已准备好的影子身份及公开资料。
+// Nickname/AvatarSeed 取自影子身份（入站时已按外站昵称刷新），用于 match.found 透传。
 type ExternalPeer struct {
 	IdentityID pgtype.UUID
 	Profile    PrefProfile
+	Nickname   string
+	AvatarSeed string
 }
 
 var (

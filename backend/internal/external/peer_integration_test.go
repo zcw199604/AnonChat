@@ -98,3 +98,58 @@ func TestExternalPeerConcurrentCreationDoesNotLeakIdentities(t *testing.T) {
 		t.Fatalf("并发创建遗留身份: count=%d err=%v", total, err)
 	}
 }
+
+// TestExternalPeerNicknameFollowsRemote 验证入站昵称透传：
+// 新建影子身份用外站昵称（清洗后），外站改名后影子身份昵称随之更新，且 match.ExternalPeer 带出。
+func TestExternalPeerNicknameFollowsRemote(t *testing.T) {
+	pool := testutil.MustPool(t)
+	testutil.Truncate(t, pool)
+	ctx := context.Background()
+	s := external.NewPeerStore(pool)
+
+	first, err := s.Resolve(ctx, "chat2019", "peer-nick", external.PeerProfile{Nickname: "  外站小明\n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Nickname != "外站小明" || first.AvatarSeed == "" {
+		t.Fatalf("新建影子身份昵称 = %q/%q, 期望清洗后的外站昵称与头像种子", first.Nickname, first.AvatarSeed)
+	}
+	ident, err := store.New(pool).GetIdentityByID(ctx, first.IdentityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ident.Nickname != "外站小明" {
+		t.Fatalf("影子身份昵称 = %q, 期望 外站小明", ident.Nickname)
+	}
+
+	// 外站改名：再次 Resolve 时影子身份昵称同步更新，头像种子保持不变。
+	again, err := s.Resolve(ctx, "chat2019", "peer-nick", external.PeerProfile{Nickname: "外站小红2024"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.IdentityID != first.IdentityID {
+		t.Fatal("同一外站用户应复用影子身份")
+	}
+	if again.Nickname != "外站小红2024" {
+		t.Fatalf("影子身份昵称未随外站昵称更新: %q", again.Nickname)
+	}
+	if again.AvatarSeed != first.AvatarSeed {
+		t.Fatalf("头像种子不应变化: %q vs %q", again.AvatarSeed, first.AvatarSeed)
+	}
+	ident, err = store.New(pool).GetIdentityByID(ctx, first.IdentityID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ident.Nickname != "外站小红2024" {
+		t.Fatalf("数据库里的影子身份昵称 = %q, 期望 外站小红2024", ident.Nickname)
+	}
+
+	// 外站昵称为空时回退为随机昵称，不能写入空字符串。
+	blank, err := s.Resolve(ctx, "chat2019", "peer-nick", external.PeerProfile{Nickname: "   "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blank.Nickname == "" {
+		t.Fatal("外站昵称为空时应回退为随机昵称")
+	}
+}

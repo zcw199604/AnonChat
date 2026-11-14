@@ -2,9 +2,17 @@
 
 export type MatchStatus = 'idle' | 'waiting' | 'chatting' | 'ended'
 
-/** 对方的公开资料芯片（how.md 3.4：match.found 去掉了 nickname 和 avatarSeed）。 */
+/**
+ * 对方的公开资料芯片。
+ * 1v1 场景（产品已确认）透传对方的真实昵称与头像种子：匹配成功后前端直接显示昵称与头像，
+ * 不再使用「匿名·XXXX」代号（how.md 3.4 已同步调整）。
+ */
 export interface MatchPeer {
   memberId: number
+  /** 对方的真实昵称（形如「形容词的名词」）。 */
+  nickname?: string
+  /** 对方的头像渐变种子。 */
+  avatarSeed?: string
   gender?: 'male' | 'female' | null
   age?: number | null
   province?: string | null

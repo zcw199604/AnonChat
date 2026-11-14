@@ -174,7 +174,6 @@ export default function StoryPlayPage() {
             <MessageList
               messages={chat.messages}
               selfMemberId={chat.myMemberId}
-              conversationId={conversationId}
               typing={chat.typing}
             />
             <Composer onSend={chat.send} onTyping={chat.sendTyping} />

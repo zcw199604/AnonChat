@@ -63,7 +63,7 @@
 ### 外站（迁移 00010）
 
 - `external_settings`：单行表（id=1），`enabled/chat2019_enabled/wanfeng_enabled` 默认 false；`online_threshold` 默认5（0–100000）、`local_wait_seconds` 默认10（0–600）、`external_match_seconds` 默认10（3–120）、`chat2019_max_sessions/wanfeng_max_sessions` 默认20（1–1000）；`updated_by → admin_users`（SET NULL）、`updated_at`。启动时确保默认行存在，后台更新后立即刷新内存与通知 Bridge。
-- `external_bindings`：主键 `(identity_id,provider)`，identity 外键 CASCADE；`provider(chat2019|wanfeng)`、`remote_uid`、`identity_token_enc`、`device_id`、`nickname`、`created_at/updated_at`。晚风 token 用 `SETTINGS_ENC_KEY` 进行 secretbox 加密（无密钥时晚风不可用），chat2019 token 列为 NULL；外站账号与随机昵称跨轮复用。
+- `external_bindings`：主键 `(identity_id,provider)`，identity 外键 CASCADE；`provider(chat2019|wanfeng)`、`remote_uid`、`identity_token_enc`、`device_id`、`nickname`、`created_at/updated_at`。晚风 token 用 `SETTINGS_ENC_KEY` 进行 secretbox 加密（无密钥时晚风不可用），chat2019 token 列为 NULL；外站账号与昵称跨轮复用（出站昵称优先用本站昵称，`nickname` 作为含数字时的回退；迁移 00011 去掉了历史昵称的 `#编号` 后缀）。
 - `external_peers`：主键 `(provider,remote_uid)`；`identity_id unique → identities`、`nickname`、`first_seen_at/last_seen_at`。同一外站对象复用同一影子身份，保障屏蔽语义。
 - `external_conversations`：`conversation_id` 主键且引用 conversations（CASCADE）；`provider`、`user_identity_id/peer_identity_id → identities`、`remote_peer_uid`、`created_at`。与建 match 会话同一事务插入；实时 link 映射在内存中。
 

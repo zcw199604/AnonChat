@@ -195,17 +195,18 @@ func TestSendInsertsAcksThenBroadcasts(t *testing.T) {
 	var payload struct {
 		ConversationID string `json:"conversationId"`
 		Message        struct {
-			ID       int64 `json:"id"`
-			MemberID int32 `json:"memberId"`
-			Nickname string
+			ID         int64  `json:"id"`
+			MemberID   int32  `json:"memberId"`
+			Nickname   string `json:"nickname"`
+			AvatarSeed string `json:"avatarSeed"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(b0.env.Data, &payload); err != nil {
 		t.Fatalf("广播载荷解析失败: %v", err)
 	}
-	// match 会话属于 1v1：nickname 按 how.md 3.6 置空，前端改用匿名代号。
-	if payload.Message.Nickname != "" || payload.Message.MemberID == 0 {
-		t.Errorf("广播载荷字段不符（1v1 的 nickname 应为空）: %+v", payload)
+	// match 会话属于 1v1：现在同样透传发送者的真实昵称与头像种子。
+	if payload.Message.Nickname != a.Nickname || payload.Message.AvatarSeed != a.AvatarSeed || payload.Message.MemberID == 0 {
+		t.Errorf("广播载荷字段不符（1v1 应透传真实昵称与头像）: %+v", payload)
 	}
 }
 
