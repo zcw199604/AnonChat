@@ -68,3 +68,20 @@ func TestExternalLogReasonWhitelist(t *testing.T) {
 		t.Fatalf("非白名单reason未被丢弃: %s", out)
 	}
 }
+
+func TestExternalLogSysContentWhitelist(t *testing.T) {
+	var buf bytes.Buffer
+	logger := externalLogger(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	keep := strings.Repeat("拒", 100)
+	logger.Info("外站匹配中收到帧", "provider", "chat2019", "code", -2, "sys_content", keep)
+	// 超过 100 个 rune 与非法类型必须被丢弃。
+	logger.Info("外站匹配中收到帧", "provider", "chat2019", "code", -2, "sys_content", keep+"超出")
+	logger.Info("外站匹配中收到帧", "provider", "chat2019", "code", -2, "sys_content", 7)
+	out := buf.String()
+	if !strings.Contains(out, `"sys_content":"`+keep+`"`) {
+		t.Fatalf("100 rune 的 sys_content 被丢弃: %s", out)
+	}
+	if strings.Count(out, `"sys_content"`) != 1 {
+		t.Fatalf("超长或非字符串 sys_content 未被丢弃: %s", out)
+	}
+}

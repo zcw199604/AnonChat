@@ -579,3 +579,41 @@ func TestBridgeMatchDiagnosticsLogWithoutFrameContent(t *testing.T) {
 		}
 	}
 }
+
+// TestBridgeMatchDiagnosticsLogSystemContent 覆盖匹配中收到 chat2019 服务端系统帧（code -2，
+// 生产上 random 后收到 code -2）时记录提示文字 sys_content，便于排查被拒原因；
+// 普通帧（code 7 等）的 content 仍然不得进入日志。
+func TestBridgeMatchDiagnosticsLogSystemContent(t *testing.T) {
+	logs := &lockedLogBuffer{}
+	b := NewBridge(BridgeDeps{Logger: slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	b.ApplySettings(Settings{Enabled: true, Chat2019Enabled: true, Chat2019MaxSessions: 1, ExternalMatchTimeout: 10 * time.Second})
+	b.providers = []provider{&fakeProvider{name: "chat2019"}}
+	b.choose = func(int) int { return 0 }
+	b.found = func(context.Context, pgtype.UUID, uint64, match.ExternalPeer, match.ExternalHooks) (pgtype.UUID, error) {
+		t.Error("匹配阶段不应激活会话")
+		return pgtype.UUID{}, match.ErrActivationRejected
+	}
+	t.Cleanup(b.Close)
+
+	const systemHint, plainBody = "random 被拒：对方已开始匹配别的会话", "secret-plain-body"
+	r := bridgeRequest(1)
+	l := startBridge(t, b, r)
+	b.emitFrame(l, map[string]any{"code": -2, "content": systemHint})
+	waitBridge(t, func() bool { return strings.Contains(logs.String(), `"sys_content"`) })
+	b.emitFrame(l, map[string]any{"code": 7, "content": plainBody, "fromuser": map[string]any{"id": "secret-peer-uid"}})
+	waitBridge(t, func() bool { return strings.Contains(logs.String(), `"code":7`) })
+	b.CancelMatch(r.Identity.ID, 1)
+
+	out := logs.String()
+	if !strings.Contains(out, `"sys_content":"`+systemHint+`"`) {
+		t.Fatalf("系统帧未记录 sys_content: %s", out)
+	}
+	if !strings.Contains(out, `"code":-2`) {
+		t.Fatalf("系统帧未记录类型码: %s", out)
+	}
+	for _, secret := range []string{plainBody, "secret-peer-uid"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("普通帧内容泄露 %q: %s", secret, out)
+		}
+	}
+}

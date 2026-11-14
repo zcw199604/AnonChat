@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"unicode/utf8"
 )
 
 // Keep the upstream port unchanged. Its diagnostics include complete untrusted
@@ -71,6 +72,12 @@ func externalLogAttr(a slog.Attr) (slog.Attr, bool) {
 		}
 	case "kind":
 		if a.Value.Kind() == slog.KindString && (a.Value.String() == "text" || a.Value.String() == "image" || a.Value.String() == "video" || a.Value.String() == "audio") {
+			return a, true
+		}
+	case "sys_content":
+		// 只用于外站服务端系统提示（如 random 被拒的原因），不是对方用户内容；
+		// 调用方负责仅在系统 code 时附加，这里再兜底限制长度与类型。
+		if a.Value.Kind() == slog.KindString && utf8.RuneCountInString(a.Value.String()) <= 100 {
 			return a, true
 		}
 	case "media", "showCity", "attempt", "failures", "count", "elapsed", "code", "state":

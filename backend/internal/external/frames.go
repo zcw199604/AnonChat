@@ -50,7 +50,13 @@ func (b *Bridge) inboundLoop(l *link) {
 				code := frameCode(ev.frame)
 				if l.state == linkMatching {
 					// 只记帧类型码，绝不记录帧内 uid/昵称/正文等内容。
-					b.deps.Logger.Info("外站匹配中收到帧", "provider", l.provider.Name(), "code", code, "state", int(l.state))
+					attrs := []any{"provider", l.provider.Name(), "code", code, "state", int(l.state)}
+					if isSystemFrameCode(code) {
+						// 系统帧的 content 是服务端提示文字（如 random 被拒的原因），不是对方用户内容，
+						// 因此仅在系统 code 时带出，并按 rune 截断上限防止超长内容。
+						attrs = append(attrs, "sys_content", truncateRunes(wanfeng.PickString(ev.frame, "content"), maxSysContentRunes))
+					}
+					b.deps.Logger.Info("外站匹配中收到帧", attrs...)
 				}
 				if (l.state == linkActivating || (l.state == linkInRoom && !l.gateOpen)) && code != 15 {
 					if len(l.pending) < 50 {
@@ -75,6 +81,29 @@ func frameCode(f map[string]any) int {
 	default:
 		return 0
 	}
+}
+
+// maxSysContentRunes 限制随诊断日志带出的系统提示文字长度（按 rune 计）。
+const maxSysContentRunes = 100
+
+// isSystemFrameCode 判断 code 是否为 chat2019 服务端系统帧：这些帧的 content 是服务端提示文字
+// （如 random 被拒的原因），不是对方用户内容，因此可以在诊断日志里带出 sys_content。
+func isSystemFrameCode(code int) bool {
+	switch code {
+	case -2, -1, 13, 14, 16:
+		return true
+	default:
+		return false
+	}
+}
+
+// truncateRunes 按 rune 截断到最多 n 个字符，避免多字节内容被截成半个字符。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 func (b *Bridge) handleFrameLocked(l *link, f map[string]any) {
