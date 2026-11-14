@@ -28,7 +28,29 @@ type Config struct {
 	ExternalWanfengProtocolOverrides  string
 	ExternalWanfengNewIdentityPerHour int
 	ExternalWanfengMediaHosts         []string
-	UserMediaMaxUploadMB              int
+	// ExternalWanfengSCFEnabled 让晚风流量（HTTP/WS/媒体）全部经腾讯云 SCF 云函数隧道出口。
+	ExternalWanfengSCFEnabled bool
+	// SCFProxyPoolFile 是 scfproxy 固定出口池 pool.json 路径（隧道模式必填）。
+	SCFProxyPoolFile string
+	// SCFProxyToken 是 SCF 隧道共享令牌，只经环境变量与子进程环境传递。
+	SCFProxyToken string
+	// SCFProxyManaged 为 true 时由本进程用腾讯云凭证自动建池/补位。
+	SCFProxyManaged bool
+	// SCFProxyCLIPath 是 scfproxy CLI 的可执行文件路径。
+	SCFProxyCLIPath string
+	// SCFProxyPackagePath 是云函数代码包（scf-server.zip）路径。
+	SCFProxyPackagePath string
+	// SCFProxyRegions 是托管模式创建云函数的候选地域，逗号分隔。
+	SCFProxyRegions string
+	// SCFProxyPoolSize 是托管模式维持的出口数量（含主用，至少 2）。
+	SCFProxyPoolSize int
+	// SCFProxyPoolPrefix 是托管模式创建云函数的名称前缀，只清理同前缀的池内节点。
+	SCFProxyPoolPrefix string
+	// SCFProxyCommandTimeout 是单次 scfproxy CLI 操作的超时。
+	SCFProxyCommandTimeout time.Duration
+	// SCFProxyReconcileInterval 是托管模式的周期维护（及失败重试）间隔。
+	SCFProxyReconcileInterval time.Duration
+	UserMediaMaxUploadMB      int
 	// Env 是运行环境：development | test | production。
 	Env string
 	// HTTPAddr 是 HTTP 服务监听地址，例如 :8080。
@@ -248,6 +270,74 @@ func (c *Config) loadExternal() error {
 			return fmt.Errorf("EXTERNAL_WANFENG_BASE_URL 必须包含合法主机名")
 		}
 		c.ExternalWanfengMediaHosts = []string{u.Hostname()}
+	}
+	if err := c.loadWanfengSCF(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// loadWanfengSCF 读取晚风 SCF 隧道配置。腾讯云凭证不进 Config，只在启动托管管理器时检查环境变量。
+func (c *Config) loadWanfengSCF() error {
+	var err error
+	if c.ExternalWanfengSCFEnabled, err = getBool("EXTERNAL_WANFENG_SCF_ENABLED", false); err != nil {
+		return err
+	}
+	c.SCFProxyPoolFile = getEnv("SCFPROXY_POOL_FILE", "")
+	c.SCFProxyToken = getEnv("SCFPROXY_TOKEN", "")
+	if c.SCFProxyManaged, err = getBool("SCFPROXY_MANAGED", false); err != nil {
+		return err
+	}
+	c.SCFProxyCLIPath = getEnv("SCFPROXY_CLI_PATH", "scfproxy")
+	c.SCFProxyPackagePath = getEnv("SCFPROXY_PACKAGE_PATH", "/app/scf-server.zip")
+	c.SCFProxyRegions = getEnv("SCFPROXY_REGIONS", "ap-guangzhou,ap-shanghai,ap-beijing")
+	if c.SCFProxyPoolSize, err = getInt("SCFPROXY_POOL_SIZE", 2); err != nil {
+		return err
+	}
+	c.SCFProxyPoolPrefix = getEnv("SCFPROXY_POOL_PREFIX", "anonchat")
+
+	// 秒数按整数解析，避免 0s 之类的写法绕过“必须为正数”的检查。
+	seconds, err := getInt("SCFPROXY_COMMAND_TIMEOUT_SECONDS", 600)
+	if err != nil {
+		return err
+	}
+	if seconds <= 0 || int64(seconds) > int64((1<<63-1)/time.Second) {
+		return fmt.Errorf("SCFPROXY_COMMAND_TIMEOUT_SECONDS 必须为正数且不超过 time.Duration 范围")
+	}
+	c.SCFProxyCommandTimeout = time.Duration(seconds) * time.Second
+	if seconds, err = getInt("SCFPROXY_RECONCILE_INTERVAL_SECONDS", 60); err != nil {
+		return err
+	}
+	if seconds <= 0 || int64(seconds) > int64((1<<63-1)/time.Second) {
+		return fmt.Errorf("SCFPROXY_RECONCILE_INTERVAL_SECONDS 必须为正数且不超过 time.Duration 范围")
+	}
+	c.SCFProxyReconcileInterval = time.Duration(seconds) * time.Second
+
+	if c.ExternalWanfengSCFEnabled {
+		if c.SCFProxyPoolFile == "" {
+			return fmt.Errorf("EXTERNAL_WANFENG_SCF_ENABLED=true 时必须配置 SCFPROXY_POOL_FILE")
+		}
+		if c.SCFProxyToken == "" {
+			return fmt.Errorf("EXTERNAL_WANFENG_SCF_ENABLED=true 时必须配置 SCFPROXY_TOKEN")
+		}
+		// 隧道与普通 HTTP 代理互斥：同时配置会让出口语义不明确。
+		if c.ExternalWanfengHTTPProxy != "" {
+			return fmt.Errorf("EXTERNAL_WANFENG_SCF_ENABLED 与 EXTERNAL_WANFENG_HTTP_PROXY 互斥，请只保留一个")
+		}
+	}
+	if c.SCFProxyManaged {
+		if !c.ExternalWanfengSCFEnabled {
+			return fmt.Errorf("SCFPROXY_MANAGED=true 需要先设置 EXTERNAL_WANFENG_SCF_ENABLED=true")
+		}
+		if c.SCFProxyPoolSize < 2 {
+			return fmt.Errorf("SCFPROXY_POOL_SIZE 至少为 2（含主用与备用）")
+		}
+		if c.SCFProxyCommandTimeout <= 0 || c.SCFProxyReconcileInterval <= 0 {
+			return fmt.Errorf("SCFPROXY_COMMAND_TIMEOUT_SECONDS 与 SCFPROXY_RECONCILE_INTERVAL_SECONDS 必须为正数")
+		}
+		if c.SCFProxyPoolPrefix == "" {
+			return fmt.Errorf("SCFPROXY_POOL_PREFIX 不能为空")
+		}
 	}
 	return nil
 }

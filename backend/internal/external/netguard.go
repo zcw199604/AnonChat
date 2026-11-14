@@ -42,6 +42,8 @@ type NetGuard struct {
 	resolver  NetResolver
 	dial      func(context.Context, string, string) (net.Conn, error)
 	transport *http.Transport
+	// tunnel 非空表示所有连接都经隧道拨号（例如腾讯云 SCF 云函数），本地不做 DNS。
+	tunnel func(context.Context, string, string) (net.Conn, error)
 }
 
 func WithNetResolver(r NetResolver) NetGuardOption {
@@ -50,6 +52,12 @@ func WithNetResolver(r NetResolver) NetGuardOption {
 
 func WithNetDialContext(d func(context.Context, string, string) (net.Conn, error)) NetGuardOption {
 	return func(g *NetGuard) { g.dial = d }
+}
+
+// WithTunnelDial 让全部连接经隧道拨号（例如 SCF 云函数 TCP 隧道）。
+// 隧道模式要求主机白名单非空且不使用代理，且绝不回退直连。
+func WithTunnelDial(dial func(ctx context.Context, network, addr string) (net.Conn, error)) NetGuardOption {
+	return func(g *NetGuard) { g.tunnel = dial }
 }
 
 func NewNetGuard(p Policy, proxyURL string, opts ...NetGuardOption) (*NetGuard, error) {
@@ -81,11 +89,24 @@ func NewNetGuard(p Policy, proxyURL string, opts ...NetGuardOption) (*NetGuard, 
 	if g.resolver == nil || g.dial == nil {
 		return nil, errors.New("地址守卫需要解析器和拨号器")
 	}
+	if g.tunnel != nil {
+		// 隧道模式与代理互斥，且必须限定目标主机：隧道出口无法用本地 DNS 结果约束。
+		if g.proxy != nil {
+			return nil, fmt.Errorf("%w: 隧道模式不能同时配置代理", ErrAddressRejected)
+		}
+		if len(g.allowed) == 0 {
+			return nil, fmt.Errorf("%w: 隧道模式需要主机白名单", ErrAddressRejected)
+		}
+	}
 	// 不从环境继承代理；直连一定经过受控解析与拨号。
 	g.transport = http.DefaultTransport.(*http.Transport).Clone()
 	g.transport.Proxy = nil
 	g.transport.DialContext = g.dialDirect
 	g.transport.DialTLSContext = nil
+	if g.tunnel != nil {
+		// TLS 由 transport 在隧道连接之上完成，ServerName 保持原主机名。
+		g.transport.DialContext = g.dialTunnel
+	}
 	if g.proxy != nil {
 		g.transport.Proxy = http.ProxyURL(g.proxy)
 		// 代理地址来自运维配置，不按外站目标 IP 规则检查。
@@ -161,6 +182,24 @@ func (g *NetGuard) dialDirect(ctx context.Context, network, address string) (net
 	return nil, dialErr
 }
 
+// dialTunnel 只检查目标主机后交给隧道；DNS 与 IP 选择在隧道出口（云函数侧）完成。
+// 隧道失败直接返回错误，绝不回退直连。
+func (g *NetGuard) dialTunnel(ctx context.Context, network, address string) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	host = canonicalHost(host)
+	if len(g.allowed) == 0 || !g.allowed[host] {
+		return nil, ErrAddressRejected
+	}
+	if ip, err := netip.ParseAddr(host); err == nil && !g.policy.AllowPrivate && !publicIP(ip) {
+		return nil, ErrAddressRejected
+	}
+	// 用原始主机名拨隧道：本地不做 DNS，避免隧道出口与本机解析不一致。
+	return g.tunnel(ctx, network, address)
+}
+
 type guardedTransport struct {
 	guard *NetGuard
 	inner http.RoundTripper
@@ -172,6 +211,31 @@ func (t guardedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	if err := t.guard.CheckURL(r.URL); err != nil {
 		return nil, err
+	}
+	return t.inner.RoundTrip(r)
+}
+
+// wsHeaderCaseTransport 把 Sec-Websocket-* 请求头改成标准写法 Sec-WebSocket-*：
+// chat2019 服务端按大小写读取 Sec-WebSocket-Key，Go 会规范化成 Sec-Websocket-Key。
+type wsHeaderCaseTransport struct {
+	inner http.RoundTripper
+}
+
+func (t wsHeaderCaseTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	// Clone 深拷贝 Header，避免修改调用方的原请求。
+	r = r.Clone(r.Context())
+	keys := make([]string, 0, len(r.Header))
+	for k := range r.Header {
+		keys = append(keys, k)
+	}
+	for _, k := range keys {
+		rest, ok := strings.CutPrefix(http.CanonicalHeaderKey(k), "Sec-Websocket-")
+		if !ok {
+			continue
+		}
+		v := r.Header[k]
+		delete(r.Header, k)
+		r.Header["Sec-WebSocket-"+rest] = v
 	}
 	return t.inner.RoundTrip(r)
 }
@@ -196,7 +260,10 @@ func (g *NetGuard) WSDialContext(ctx context.Context, rawURL string) (*websocket
 	if err := g.CheckURL(u); err != nil {
 		return nil, err
 	}
-	conn, response, err := websocket.Dial(ctx, rawURL, &websocket.DialOptions{HTTPClient: g.HTTPClient(0)})
+	// chat2019 服务端按大小写读取 Sec-WebSocket-Key，Go 会规范化成 Sec-Websocket-Key，这里改回标准大小写。
+	client := g.HTTPClient(0)
+	client.Transport = wsHeaderCaseTransport{inner: client.Transport}
+	conn, response, err := websocket.Dial(ctx, rawURL, &websocket.DialOptions{HTTPClient: client})
 	if err != nil && response != nil && response.Body != nil {
 		_ = response.Body.Close()
 	}
@@ -208,6 +275,10 @@ func (g *NetGuard) GorillaDialer() *gorilla.Dialer {
 	d := &gorilla.Dialer{HandshakeTimeout: 10 * time.Second, NetDialContext: g.dialDirect}
 	if g.proxy != nil {
 		d.NetDialContext = g.dial
+	}
+	if g.tunnel != nil {
+		// WS 与 HTTP 共用隧道拨号规则；Proxy 函数仍然只做目标检查后返回 nil。
+		d.NetDialContext = g.dialTunnel
 	}
 	d.Proxy = func(req *http.Request) (*url.URL, error) {
 		if err := g.CheckURL(req.URL); err != nil {

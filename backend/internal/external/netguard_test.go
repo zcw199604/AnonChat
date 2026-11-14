@@ -1,9 +1,12 @@
 package external
 
 import (
+	"bufio"
 	"context"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -248,6 +251,66 @@ func TestNetGuardWebSocketDialersSharePolicy(t *testing.T) {
 				t.Fatalf("err=%v dialed=%v", err, dialed)
 			}
 		})
+	}
+}
+
+// TestNetGuardWSDialKeepsHeaderCase 模拟 chat2019 服务端：只按精确大小写读取 Sec-WebSocket-Key。
+func TestNetGuardWSDialKeepsHeaderCase(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	raw := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		var b strings.Builder
+		for {
+			line, err := br.ReadString('\n')
+			b.WriteString(line)
+			if err != nil || line == "\r\n" {
+				break
+			}
+		}
+		request := b.String()
+		raw <- request
+		// 严格区分大小写：只认 Sec-WebSocket-Key。
+		var key string
+		for _, line := range strings.Split(request, "\r\n") {
+			if v, ok := strings.CutPrefix(line, "Sec-WebSocket-Key: "); ok {
+				key = v
+			}
+		}
+		sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(sum[:]))
+		_, _ = br.ReadByte()
+	}()
+	g := mustGuard(t, Policy{}, "", WithNetResolver(netGuardResolver(func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}}, nil
+	})), WithNetDialContext(func(ctx context.Context, network, address string) (net.Conn, error) {
+		if address != "8.8.8.8:80" {
+			return nil, fmt.Errorf("未拨已检查IP: %s", address)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, ln.Addr().String())
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, err := g.WSDialContext(ctx, "ws://public.test/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.CloseNow()
+	request := <-raw
+	if !strings.Contains(request, "\r\nSec-WebSocket-Key: ") {
+		t.Fatalf("请求缺少 Sec-WebSocket-Key: %q", request)
+	}
+	if strings.Contains(request, "Sec-Websocket-Key:") {
+		t.Fatalf("请求头大小写被规范化: %q", request)
 	}
 }
 

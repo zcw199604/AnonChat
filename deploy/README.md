@@ -190,6 +190,26 @@ docker compose exec -it backend /server admin create --username admin
 
 chat2019 **永远直连且禁止重定向**。晚风直连时解析并检查目标 IP，再直接拨号到已检查的 IP；代理模式改为主机名白名单，并检查 HTTP、WS、媒体及重定向的目标。**代理侧 DNS 解析不受本机控制**：即使主机名在白名单中，代理端解析被篡改仍有访问错误地址的风险；只填可信公网域名，维护可信代理及其 DNS，不使用宽泛或不受控白名单。
 
+### 晚风 SCF 隧道（可选）
+
+香港等机房直连 `wanfengniming.store` 可能被对方阿里云 ESA WAF 拦截（HTTP 403 `Denied by http_custom`）。此时可让晚风全部流量改走腾讯云 SCF 云函数 TCP 隧道；chat2019 始终直连，不受影响。
+
+```bash
+EXTERNAL_WANFENG_SCF_ENABLED=true
+SCFPROXY_MANAGED=true
+SCFPROXY_POOL_FILE=/data/scf/pool.json
+SCFPROXY_TOKEN=...            # openssl rand -hex 32，须与云函数侧一致
+TENCENTCLOUD_SECRET_ID=...
+TENCENTCLOUD_SECRET_KEY=...
+```
+
+- 镜像内置 `scfproxy` CLI 与 `scf-server.zip`（linux/amd64），`backend` 挂载 `scf` 卷到 `/data/scf`；池文件必须可写（自动切换会写锁文件并原子更新池文件），不要改成只读挂载或单文件挂载。
+- 与 `EXTERNAL_WANFENG_HTTP_PROXY` **互斥**，两者同时配置会启动失败。
+- `SCFPROXY_MANAGED=true` 时由本服务创建/删除**计费**云函数、自动补位与清理退役节点，首次建池可能需要数分钟；凭证只经环境传入子进程，不进入命令行参数、池文件或日志。设为 `false` 则只复用已有池（仍支持 IP 封禁自动切换）。
+- `SCFPROXY_POOL_PREFIX` 默认 `anonchat`，与共用同一腾讯云账号的 liao 区分，勿改成相同值。
+- 隧道初始化失败（凭证缺失、CLI 不可执行、建池失败等）不会阻止整体启动：backend 只停用晚风并记录错误，chat2019 照常，后台状态显示晚风「未装配」。
+- 隧道模式下晚风出口按主机白名单检查，DNS 与拨号在云函数侧完成，本地不做 DNS，且**永不回退直连**。
+
 ### 探测工具与启用顺序（人工执行）
 
 生产 distroless 镜像只有 `/server`，没有 shell、Go 或 probe。在**部署机同一版本源码**的 `backend/` 中用 Go 1.27.3 编译独立工具（或在构建机按部署机 OS/架构交叉编译后传入），放在仓库外：

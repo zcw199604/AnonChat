@@ -671,3 +671,113 @@ func TestGetBool(t *testing.T) {
 		}
 	}
 }
+
+// scfEnvKeys 是 SCF 隧道相关变量，测试前统一清空，避免受开发机环境影响。
+var scfEnvKeys = []string{
+	"EXTERNAL_WANFENG_SCF_ENABLED", "SCFPROXY_POOL_FILE", "SCFPROXY_TOKEN", "SCFPROXY_MANAGED",
+	"SCFPROXY_CLI_PATH", "SCFPROXY_PACKAGE_PATH", "SCFPROXY_REGIONS", "SCFPROXY_POOL_SIZE",
+	"SCFPROXY_POOL_PREFIX", "SCFPROXY_COMMAND_TIMEOUT_SECONDS", "SCFPROXY_RECONCILE_INTERVAL_SECONDS",
+	"EXTERNAL_WANFENG_HTTP_PROXY",
+}
+
+func cleanSCFEnv(t *testing.T) {
+	t.Helper()
+	setEnv(t, validEnv())
+	for _, key := range scfEnvKeys {
+		t.Setenv(key, "")
+	}
+}
+
+func TestLoadWanfengSCFDefaults(t *testing.T) {
+	cleanSCFEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ExternalWanfengSCFEnabled || cfg.SCFProxyManaged {
+		t.Fatal("默认不得开启 SCF 隧道或托管模式")
+	}
+	if cfg.SCFProxyPoolFile != "" || cfg.SCFProxyToken != "" {
+		t.Fatal("默认不得有池文件或令牌")
+	}
+	if cfg.SCFProxyCLIPath != "scfproxy" || cfg.SCFProxyPackagePath != "/app/scf-server.zip" {
+		t.Fatalf("CLI/包路径默认值错误: %q %q", cfg.SCFProxyCLIPath, cfg.SCFProxyPackagePath)
+	}
+	if cfg.SCFProxyRegions != "ap-guangzhou,ap-shanghai,ap-beijing" {
+		t.Fatalf("Region 默认值错误: %q", cfg.SCFProxyRegions)
+	}
+	if cfg.SCFProxyPoolSize != 2 || cfg.SCFProxyPoolPrefix != "anonchat" {
+		t.Fatalf("池默认值错误: %d %q", cfg.SCFProxyPoolSize, cfg.SCFProxyPoolPrefix)
+	}
+	if cfg.SCFProxyCommandTimeout != 600*time.Second || cfg.SCFProxyReconcileInterval != 60*time.Second {
+		t.Fatalf("超时默认值错误: %v %v", cfg.SCFProxyCommandTimeout, cfg.SCFProxyReconcileInterval)
+	}
+}
+
+func TestLoadWanfengSCFRequiresPoolFileAndToken(t *testing.T) {
+	for name, kv := range map[string]map[string]string{
+		"缺少池文件": {"EXTERNAL_WANFENG_SCF_ENABLED": "true", "SCFPROXY_TOKEN": "test-token"},
+		"缺少令牌":  {"EXTERNAL_WANFENG_SCF_ENABLED": "true", "SCFPROXY_POOL_FILE": "/tmp/scf/pool.json"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cleanSCFEnv(t)
+			setEnv(t, kv)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SCFPROXY_") {
+				t.Fatalf("期望 %s 校验失败, got %v", name, err)
+			}
+		})
+	}
+}
+
+func TestLoadWanfengSCFRejectsProxyCombination(t *testing.T) {
+	cleanSCFEnv(t)
+	setEnv(t, map[string]string{
+		"EXTERNAL_WANFENG_SCF_ENABLED": "true",
+		"SCFPROXY_POOL_FILE":           "/tmp/scf/pool.json",
+		"SCFPROXY_TOKEN":               "test-secret-token",
+		"EXTERNAL_WANFENG_HTTP_PROXY":  "http://proxy.test:8080",
+	})
+	cfg, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "互斥") {
+		t.Fatalf("隧道与代理同时配置未被拒绝: cfg=%v err=%v", cfg, err)
+	}
+	// 错误信息不得包含令牌值。
+	if strings.Contains(err.Error(), "test-secret-token") {
+		t.Fatal("校验错误泄漏了令牌")
+	}
+}
+
+func TestLoadWanfengSCFManagedValidation(t *testing.T) {
+	base := map[string]string{
+		"EXTERNAL_WANFENG_SCF_ENABLED": "true",
+		"SCFPROXY_POOL_FILE":           "/tmp/scf/pool.json",
+		"SCFPROXY_TOKEN":               "test-secret-token",
+	}
+	for name, extra := range map[string]map[string]string{
+		"未开启隧道":   {"EXTERNAL_WANFENG_SCF_ENABLED": "false", "SCFPROXY_MANAGED": "true"},
+		"池太小":     {"SCFPROXY_MANAGED": "true", "SCFPROXY_POOL_SIZE": "1"},
+		"命令超时非正数": {"SCFPROXY_MANAGED": "true", "SCFPROXY_COMMAND_TIMEOUT_SECONDS": "0"},
+		"维护间隔非正数": {"SCFPROXY_MANAGED": "true", "SCFPROXY_RECONCILE_INTERVAL_SECONDS": "0"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cleanSCFEnv(t)
+			setEnv(t, base)
+			setEnv(t, extra)
+			if _, err := Load(); err == nil {
+				t.Fatalf("%s 未被拒绝", name)
+			}
+		})
+	}
+	t.Run("合法配置", func(t *testing.T) {
+		cleanSCFEnv(t)
+		setEnv(t, base)
+		setEnv(t, map[string]string{"SCFPROXY_MANAGED": "true", "SCFPROXY_POOL_SIZE": "3", "SCFPROXY_POOL_PREFIX": "anonchat-test"})
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.SCFProxyManaged || cfg.SCFProxyPoolSize != 3 || cfg.SCFProxyPoolPrefix != "anonchat-test" {
+			t.Fatalf("托管配置未生效: %+v", cfg)
+		}
+	})
+}

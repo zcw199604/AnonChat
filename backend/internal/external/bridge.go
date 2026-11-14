@@ -36,6 +36,8 @@ type BridgeDeps struct {
 	MediaMaxBytes      int64
 	NewIdentityPerHour int
 	Logger             *slog.Logger
+	// onClose 在 Bridge.Close 收尾时执行一次（例如关闭晚风 SCF 隧道）。
+	onClose func()
 }
 type provider interface {
 	Name() string
@@ -128,7 +130,9 @@ type StatusSnapshot struct {
 	Queue     int              `json:"queue"`
 }
 type Bridge struct {
-	chatMedia        *chat2019.Media
+	chatMedia *chat2019.Media
+	// onClose 是可选的收尾函数，在 Close 完成所有链接清理后调用一次。
+	onClose          func()
 	wg               sync.WaitGroup
 	deps             BridgeDeps
 	bindings         *BindingStore
@@ -155,7 +159,7 @@ type Bridge struct {
 
 func NewBridge(d BridgeDeps) *Bridge {
 	d.Logger = externalLogger(d.Logger)
-	b := &Bridge{deps: d, bindings: NewBindingStore(d.Pool, d.EncKey), peers: NewPeerStore(d.Pool), limiter: NewIdentityLimiter(d.NewIdentityPerHour), links: make(map[pgtype.UUID]*link), convs: make(map[pgtype.UUID]*link), attempts: make(map[pgtype.UUID]*intent), stats: make(map[string]ProviderStatus), identityCooldown: make(map[string]map[pgtype.UUID]time.Time), now: time.Now, choose: rand.IntN}
+	b := &Bridge{deps: d, onClose: d.onClose, bindings: NewBindingStore(d.Pool, d.EncKey), peers: NewPeerStore(d.Pool), limiter: NewIdentityLimiter(d.NewIdentityPerHour), links: make(map[pgtype.UUID]*link), convs: make(map[pgtype.UUID]*link), attempts: make(map[pgtype.UUID]*intent), stats: make(map[string]ProviderStatus), identityCooldown: make(map[string]map[pgtype.UUID]time.Time), now: time.Now, choose: rand.IntN}
 	b.chatMedia = chat2019.NewMedia(d.Chat2019, d.MediaMaxBytes)
 	if d.Settings != nil {
 		b.settings = d.Settings.Plan()
@@ -497,6 +501,14 @@ func (b *Bridge) Close() {
 		b.closeLink(l, true)
 	}
 	b.wg.Wait()
+	// 隧道等外部资源必须在所有链接停用之后再关闭；重复调用 Close 只执行一次。
+	b.mu.Lock()
+	onClose := b.onClose
+	b.onClose = nil
+	b.mu.Unlock()
+	if onClose != nil {
+		onClose()
+	}
 }
 func (b *Bridge) Status() StatusSnapshot {
 	b.mu.Lock()

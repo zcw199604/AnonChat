@@ -40,6 +40,8 @@ services:
       - ./wordlist:/etc/anonchat/wordlist:ro
       # 媒体库（图片/视频）持久化：MEDIA_ROOT=/data/media 见 environment。
       - media:/data/media
+      # SCF 出口池持久化：容器重建后继续使用原池（停止服务不销毁云函数）。
+      - scf:/data/scf
     healthcheck:
       test: ["CMD", "/server", "healthcheck"]
       interval: 30s
@@ -106,6 +108,8 @@ volumes:
   pgdata:
   # 媒体库文件（后台媒体库里上传的图片/视频）。
   media:
+  # 晚风 SCF 隧道出口池（pool.json 及锁文件）。
+  scf:
   caddy_data:
   caddy_config:
   backups:
