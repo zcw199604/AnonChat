@@ -85,3 +85,20 @@ func TestExternalLogSysContentWhitelist(t *testing.T) {
 		t.Fatalf("超长或非字符串 sys_content 未被丢弃: %s", out)
 	}
 }
+
+func TestExternalLogErrorMsgWhitelist(t *testing.T) {
+	var buf bytes.Buffer
+	logger := externalLogger(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	keep := strings.Repeat("断", 200)
+	logger.Warn("外站连接失败", "provider", "chat2019", "reason", "connection_failed", "error_msg", keep)
+	// 超过 200 个 rune 与非字符串取值必须被丢弃。
+	logger.Warn("外站连接失败", "provider", "chat2019", "reason", "connection_failed", "error_msg", keep+"超出")
+	logger.Warn("外站连接失败", "provider", "chat2019", "reason", "connection_failed", "error_msg", 7)
+	out := buf.String()
+	if !strings.Contains(out, `"error_msg":"`+keep+`"`) {
+		t.Fatalf("200 rune 的 error_msg 被丢弃: %s", out)
+	}
+	if strings.Count(out, `"error_msg"`) != 1 {
+		t.Fatalf("超长或非字符串 error_msg 未被丢弃: %s", out)
+	}
+}

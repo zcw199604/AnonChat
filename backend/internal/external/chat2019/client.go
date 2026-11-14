@@ -55,6 +55,9 @@ type Conn struct {
 	closeOnce sync.Once
 	onFrame   func(map[string]any)
 	onClose   func(bool, error)
+	// logger 可为 nil（Dial 时取自 cfg.Logger）。只用于 debug 级诊断，且只能记录
+	// 长度之类的元数据：外站帧内容属于对方用户消息，不得落日志。
+	logger *slog.Logger
 	// signed is closed once the sign ack arrived; signedOnce guards close(signed).
 	signed     chan struct{}
 	signedOnce sync.Once
@@ -96,7 +99,7 @@ func Dial(ctx context.Context, cfg Config, self Self, onFrame func(map[string]an
 		return nil, err
 	}
 	life, cancel := context.WithCancel(context.Background())
-	c := &Conn{ws: ws, ctx: life, cancel: cancel, onFrame: onFrame, onClose: onClose, signed: make(chan struct{})}
+	c := &Conn{ws: ws, ctx: life, cancel: cancel, onFrame: onFrame, onClose: onClose, logger: cfg.Logger, signed: make(chan struct{})}
 	c.dialing.Store(true)
 	sign := map[string]any{"act": "sign", "id": self.UID, "name": self.Nickname, "userSex": self.Sex, "address_show": "false", "randomhealthmode": "0", "randomvipsex": "0", "randomvipaddress": "0", "userip": "", "useraddree": "", "randomvipcode": ""}
 	if err := c.Send(sign); err != nil {
@@ -148,12 +151,25 @@ func (c *Conn) finish(expected bool, err error) {
 func (c *Conn) readLoop() {
 	for {
 		ctx, cancel := context.WithTimeout(c.ctx, 700*time.Second)
-		var frame map[string]any
-		err := wsjson.Read(ctx, c.ws, &frame)
+		typ, data, err := c.ws.Read(ctx)
 		cancel()
 		if err != nil {
+			// 只有传输层错误才结束连接：读超时、网络/关闭错误都在这里。
 			c.finish(false, err)
 			return
+		}
+		var frame map[string]any
+		// chat2019 服务端会夹带非对象帧（纯文本、数组、字符串、数字、null、二进制）。
+		// liao 的前端对每帧 JSON.parse 用 try/catch 包住、解析失败只跳过该帧，这里保持
+		// 同样的容忍度：单帧无法解析不是断线原因，不让它 finish 整条连接。
+		// json.Unmarshal("null") 会返回 nil map 而不报错，因此也要判空。
+		if typ != websocket.MessageText || json.Unmarshal(data, &frame) != nil || frame == nil {
+			if c.logger != nil {
+				// 只记录帧长度，绝不记录内容：可能是对方用户消息。
+				// 用 Info 而非 Debug：生产日志级别是 Info，Debug 级会被直接丢弃，跳帧等于静默。
+				c.logger.Info("chat2019 忽略非对象帧", "count", len(data))
+			}
+			continue
 		}
 		if frame["code"] == float64(-3) && frame["forceout"] == true {
 			c.finish(false, ErrForceout)

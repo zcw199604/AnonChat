@@ -429,6 +429,17 @@ func (b *Bridge) closeLink(l *link, cancelMatching bool) bool {
 	}
 	return true
 }
+
+// disconnectLogAttrs 组装外站断线 Warn 的属性。error_msg 只对 chat2019 附加：它的
+// 错误来自 coder/websocket 的网络/关闭路径，不含对方消息内容；晚风错误可能带签名 URL
+// 等上游凭据，因此不附加。error 本身仍由 externalLogger 折叠为类型名。
+func disconnectLogAttrs(provider, reason string, err error) []any {
+	attrs := []any{"provider", provider, "reason", reason, "error", err}
+	if provider == "chat2019" && err != nil {
+		attrs = append(attrs, "error_msg", truncateRunes(err.Error(), 200))
+	}
+	return attrs
+}
 func (b *Bridge) connectionLost(l *link, err error) {
 	// Callbacks can run synchronously inside a session operation while link.mu is
 	// held. Latch invalidation immediately; cleanup acquires the link lock and
@@ -441,7 +452,7 @@ func (b *Bridge) connectionLost(l *link, err error) {
 	}
 	if !cooled && err != nil {
 		// cooldown 已为带分类错误的断线记录过 Warn("外站连接失败")，这里只补记其余断线，避免重复。
-		b.deps.Logger.Warn("外站连接断开", "provider", l.provider.Name(), "reason", "connection_lost", "error", err)
+		b.deps.Logger.Warn("外站连接断开", disconnectLogAttrs(l.provider.Name(), "connection_lost", err)...)
 	}
 	if first {
 		b.runAsync(func() { b.closeLink(l, false) })
@@ -490,7 +501,8 @@ func (b *Bridge) cooldown(l *link, err error) {
 	b.stats[name] = s
 	b.mu.Unlock()
 	// 只记录分类结果；error 由 externalLogger 折叠为类型名，绝不落上游错误原文。
-	b.deps.Logger.Warn("外站连接失败", "provider", name, "reason", s.LastError, "error", err)
+	// chat2019 额外带 error_msg（网络/关闭错误原文，见 disconnectLogAttrs）。
+	b.deps.Logger.Warn("外站连接失败", disconnectLogAttrs(name, s.LastError, err)...)
 }
 func (b *Bridge) ApplySettings(s Settings) {
 	b.mu.Lock()

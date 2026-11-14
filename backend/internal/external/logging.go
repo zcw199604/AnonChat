@@ -80,6 +80,13 @@ func externalLogAttr(a slog.Attr) (slog.Attr, bool) {
 		if a.Value.Kind() == slog.KindString && utf8.RuneCountInString(a.Value.String()) <= 100 {
 			return a, true
 		}
+	case "error_msg":
+		// 只用于 chat2019 断线诊断：该错误来自 coder/websocket 的网络/关闭路径，不含
+		// 对方消息内容，因此可以带出原文以定位断线原因。晚风错误可能含签名 URL 等上游
+		// 凭据，调用方不附加此属性；这里再兜底限制类型与 200 rune 长度。
+		if a.Value.Kind() == slog.KindString && utf8.RuneCountInString(a.Value.String()) <= 200 {
+			return a, true
+		}
 	case "media", "showCity", "attempt", "failures", "count", "elapsed", "code", "state":
 		switch a.Value.Kind() {
 		case slog.KindBool, slog.KindInt64, slog.KindUint64, slog.KindDuration:

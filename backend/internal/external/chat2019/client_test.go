@@ -1,10 +1,12 @@
 package chat2019_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -370,5 +372,82 @@ func TestDialFailsSilentlyWhenConnectionClosesBeforeSignAck(t *testing.T) {
 	case event := <-closed:
 		t.Fatalf("Dial 失败时不应回调 onClose: %+v", event)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestReadLoopSkipsNonObjectFrames(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		ctx := r.Context()
+		var sign map[string]any
+		if wsjson.Read(ctx, c, &sign) != nil {
+			return
+		}
+		if wsjson.Write(ctx, c, map[string]any{"code": 12, "content": "连接服务器成功！"}) != nil {
+			return
+		}
+		// 生产上 chat2019 会在正常帧之间夹带非 JSON 对象的帧：纯文本、数组、字符串、
+		// 二进制、null。liao 前端只跳过这些帧，连接必须继续可用。
+		for _, raw := range []struct {
+			typ  websocket.MessageType
+			data string
+		}{
+			{websocket.MessageText, "hello"},
+			{websocket.MessageText, "[1,2]"},
+			{websocket.MessageText, `"x"`},
+			{websocket.MessageBinary, "\x00\x01"},
+			{websocket.MessageText, "null"},
+		} {
+			if err := c.Write(ctx, raw.typ, []byte(raw.data)); err != nil {
+				return
+			}
+		}
+		if wsjson.Write(ctx, c, map[string]any{"code": 15, "sel_userid": "u"}) != nil {
+			return
+		}
+		_, _, _ = c.Read(ctx)
+	}))
+	defer srv.Close()
+	cfg := guardConfig(t)
+	cfg.FallbackWS = "ws" + strings.TrimPrefix(srv.URL, "http")
+	var logs bytes.Buffer
+	cfg.Logger = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	got := make(chan map[string]any, 8)
+	closed := make(chan closeEvent, 2)
+	conn, err := chat2019.Dial(context.Background(), cfg, self, func(v map[string]any) { got <- v }, func(e bool, err error) { closed <- closeEvent{e, err} })
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+	if ack := receive(t, got); ack["code"] != float64(12) {
+		t.Fatalf("未转发登录确认帧: %v", ack)
+	}
+	frame := receive(t, got)
+	if frame["code"] != float64(15) || frame["sel_userid"] != "u" {
+		t.Fatalf("非对象帧之后的正常帧丢失: %v", frame)
+	}
+	select {
+	case event := <-closed:
+		t.Fatalf("非对象帧不应断开连接: %+v", event)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if out := logs.String(); !strings.Contains(out, "chat2019 忽略非对象帧") {
+		t.Fatalf("未记录跳过日志: %s", out)
+	} else if !strings.Contains(out, "count=5") {
+		t.Fatalf("跳过日志缺少帧长度: %s", out)
+	}
+	// 日志只记长度，绝不落帧内容。
+	for _, content := range []string{"hello", "[1,2]", "sel_userid"} {
+		if strings.Contains(logs.String(), content) {
+			t.Fatalf("跳过日志泄露帧内容 %q: %s", content, logs.String())
+		}
+	}
+	// 跳帧后连接仍可写。
+	if err := conn.Send(map[string]any{"act": "randomOut", "id": self.UID, "msg": "cancel-id"}); err != nil {
+		t.Fatalf("跳帧后写入失败: %v", err)
 	}
 }
